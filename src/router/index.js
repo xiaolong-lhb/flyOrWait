@@ -6,6 +6,7 @@ import { createRouter, createWebHistory } from 'vue-router';
  * index.vue 是常驻框架：顶部 logo + 功能 tab 始终保留，
  * 下方内容区根据子路由切换：
  *   ''             查询航班（默认页）
+ *   result         查询结果（从查询页跳过来，不在 tab 里）
  *   mySubscribtion 我的订阅
  *   setting        设置
  */
@@ -20,6 +21,11 @@ const router = createRouter({
           path: '',
           name: 'discovery',
           component: () => import('../views/powerTabs/discovery.vue'),
+        },
+        {
+          path: 'result',
+          name: 'result',
+          component: () => import('../views/powerTabs/result.vue'),
         },
         {
           path: 'mySubscribtion',

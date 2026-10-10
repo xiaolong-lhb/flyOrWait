@@ -5,16 +5,17 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:api": "node scripts/dev-api.mjs",
     "build": "vite build",
     "preview": "vite preview",
     "lint": "run-s \"lint:*\"",
     "lint:oxlint": "oxlint . --fix",
     "lint:eslint": "eslint . --fix --cache",
-    "format": "prettier --write --experimental-cli src/"
+    "format": "prettier --write --experimental-cli src/ api/ scripts/"
   },
   "dependencies": {
+    "axios": "^1.20.0",
     "element-plus": "^2.14.7",
-    "lightningcss-win32-x64-msvc": "^1.33.0",
     "pinia": "^4.0.3",
     "vue": "^3.5.42",
     "vue-router": "^5.3.1"
