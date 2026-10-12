@@ -30,6 +30,9 @@ export default function handler(req, res) {
       service: 'flyorwait-api',
       runtime: `node ${process.version}`,
       time: new Date().toISOString(),
+      // 诊断用：回显收到的身份标识，证明请求头 X-Owner-Id 真的到达了后端。
+      // 它不是密钥（当前是固定值、每次请求明文发送），回显给同一个客户端没有泄露风险。
+      identityId: req.headers['x-owner-id'] || null,
       env: {
         SUPABASE_URL: Boolean(process.env.SUPABASE_URL),
         SUPABASE_SERVICE_KEY: Boolean(process.env.SUPABASE_SERVICE_KEY),

@@ -295,6 +295,7 @@ async function probeHealth() {
   try {
     const data = await http.get('/health');
     console.log('[探针] ✅ /api/health 通了，返回：', data);
+    console.log('[探针] 本次请求携带的 identityId =', data.identityId);
   } catch (e) {
     console.error('[探针] ❌ /api/health 失败：', e);
     ElMessage.error(`探针失败：${e.message}`);
