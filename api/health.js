@@ -35,7 +35,9 @@ export default function handler(req, res) {
       identityId: req.headers['x-owner-id'] || null,
       env: {
         SUPABASE_URL: Boolean(process.env.SUPABASE_URL),
-        SUPABASE_SERVICE_KEY: Boolean(process.env.SUPABASE_SERVICE_KEY),
+        // 2026 年 Supabase 把 service_role key 改名叫 secret key，
+        // 变量名跟着官方走（旧名 SUPABASE_SERVICE_KEY 已弃用）。
+        SUPABASE_SECRET_KEY: Boolean(process.env.SUPABASE_SECRET_KEY),
         SERPAPI_KEY: Boolean(process.env.SERPAPI_KEY),
         SKYSCRAPPER_KEY: Boolean(process.env.SKYSCRAPPER_KEY),
         DEEPSEEK_KEY: Boolean(process.env.DEEPSEEK_KEY),

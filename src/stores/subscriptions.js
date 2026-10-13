@@ -1,87 +1,87 @@
 import { defineStore } from 'pinia';
-import { ref, watch } from 'vue';
+import { ref } from 'vue';
 
-const LS_KEY = 'fow:subscriptions';
-
-const pad2 = (n) => String(n).padStart(2, '0');
-const nowText = () => {
-  const d = new Date();
-  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
-};
+import { http } from '../api/index.js';
 
 /**
- * 订阅（盯价监控）
+ * 订阅（盯价监控）· 数据唯一来源是后端
  *
- * ⚠️ 未接入后端：先落 localStorage，让未登录状态也能攒下订阅。
- *    接入后替换点：
- *      ① 读取      → Supabase `subscriptions` / `notify_log`（按登录用户过滤）
- *      ② 新建订阅  → 写 `subscriptions` 表，同时注册该条的 Cron 检查
- *      ③ currentPrice / lastNotified → 由 Vercel Cron 每天比价后回写
- *      ④ 取消订阅  → 停掉该条的 Cron 检查（验收点：取消后不再监控）
- *      ⑤ 改配置    → 阈值 / 邮箱 / 截止日在「我的订阅」里就地改，改完即回写
+ * 没有前端缓存：items / logs 都从空数组起步，进页面 fetchSubscriptions() 拉到什么就以什么为准。
+ * localStorage 已退场 —— 它被「写完重新拉」取代后只剩害处：会留下「本地有、库里没有」的假象
+ * （尤其那些 id 根本不在库里的种子数据，点暂停 / 保存会打到不存在的 id）。
+ *
+ *   列表        → GET    /api/subscriptions
+ *   新建        → POST   /api/subscriptions          （重复 → 409 / 4090）
+ *   取消        → DELETE /api/subscriptions/:id
+ *   暂停 / 恢复 → PATCH  /api/subscriptions/:id      { status }
+ *   改配置      → PATCH  /api/subscriptions/:id      { threshold, email, deadline }
+ *
+ * ★★ 一条总规则：**前端不维护数据，只把数据库的当前样子画出来。**
+ *    写操作一律「发指令 → 重新拉一次 → 整体覆盖」，见 writeAndSync()。
+ *    不在本地 unshift / filter / Object.assign —— 位置、顺序、条数全由后端说了算，
+ *    否则等于把后端的排序 / 过滤规则抄一份到前端，后端一改前端就静默排错。
+ *
+ * loading 由 store 统一管（每次触达后端都置位），页面拿它显示转圈。
+ * 失败不在这里吞 —— 抛给调用方（页面）决定弹什么、要不要停在编辑态。
+ *
+ * currentPrice / lastNotified 由 Cron 每天比价后回写，前端只读。
+ * 字段翻译（from ↔ origin 等）只在后端做，store 只说业务语言，见 api/_translate.js。
  */
 
-/** 首次进入时给的示例（对应原型屏幕③的两条）——本地已有记录则不再注入 */
-const SEED = {
-  items: [
-    {
-      id: 'sub_seed_1',
-      from: 'SZX',
-      to: 'TYO',
-      departDate: '2026-11-12',
-      flight: { id: 'ZH0820', airline: '深航 ZH', departTime: '08:20', stopText: '直飞' },
-      basePrice: 2180, // 订阅那一刻的价格（全列表最低 or 指定航班价）
-      currentPrice: 2180, // →【API】Cron 每天回写的「当前最低」
-      threshold: 2000,
-      deadline: '2026-10-22',
-      email: 'master@mail.com',
-      status: 'active', // active 监控中 / paused 已暂停
-      createdAt: '2026-10-05 10:20',
-      lastNotified: null,
-    },
-    {
-      id: 'sub_seed_2',
-      from: 'PVG',
-      to: 'SEL',
-      departDate: '2026-12-01',
-      flight: { id: 'MU5101', airline: '东航 MU', departTime: '10:35', stopText: '直飞' },
-      basePrice: 1560,
-      currentPrice: 1540,
-      threshold: 1400,
-      deadline: '2026-11-10',
-      email: 'master@mail.com',
-      status: 'paused',
-      createdAt: '2026-09-10 09:30',
-      lastNotified: '09-25 降价至 ¥1,520',
-    },
-  ],
-  // →【API】notify_log 表：每次跌破阈值发信后追加一条
-  logs: [
-    { id: 'log_1', time: '09-25 09:12', from: 'PVG', to: 'SEL', price: 1520, status: '已邮件通知' },
-    { id: 'log_2', time: '09-18 09:12', from: 'PVG', to: 'SEL', price: 1560, status: '已邮件通知' },
-  ],
-};
-
 export const useSubscriptionsStore = defineStore('subscriptions', () => {
-  const cached = (() => {
+  /** 订阅列表 —— 唯一来源是后端，进页面 fetchSubscriptions() 拉到什么就是什么 */
+  const items = ref([]);
+
+  /** 通知流水 →【API】后端还没有对应接口，先保持空数组；接口补上后跟 items 一样拉取 */
+  const logs = ref([]);
+
+  /** 是否正在和后端同步（进页面拉取、写完重新拉都算）→ 页面据此显示 loading */
+  const loading = ref(false);
+
+  /**
+   * 拉取「我的订阅」：从后端读，成功后整体覆盖本地列表
+   *
+   * 失败不在这里吞掉，直接把错误抛给调用方：约定是「只有失败才提示」，
+   * 至于弹什么，由调用方（页面）决定，store 不替它做主。
+   * 抛出的错误已是归一化后的 { code, message, status }，见 src/api/index.js 的拦截器。
+   *
+   * 注意 http.get 拿到的已经是「响应体的 data」本身（拦截器帮剥了壳），
+   * 所以下面赋值时不需要再 .data 一次，拿到的就是订阅数组。
+   */
+  async function fetchSubscriptions() {
+    loading.value = true;
     try {
-      const raw = localStorage.getItem(LS_KEY);
-      return raw ? JSON.parse(raw) : null;
-    } catch {
-      return null;
+      items.value = await http.get('/subscriptions');
+    } finally {
+      loading.value = false;
     }
-  })();
+  }
 
-  const items = ref(cached?.items ?? SEED.items);
-  const logs = ref(cached?.logs ?? SEED.logs);
-
-  watch(
-    [items, logs],
-    () => {
-      localStorage.setItem(LS_KEY, JSON.stringify({ items: items.value, logs: logs.value }));
-    },
-    { deep: true },
-  );
+  /**
+   * 写操作的统一外壳：跑完这个写请求 → 重新拉一次列表，让后端的当前状态覆盖本地。
+   *
+   * ★ 前端不维护列表：不 unshift、不 filter、不 assign —— 顺序、条数、字段全由后端说了算。
+   *   否则等于把后端的排序 / 过滤规则抄了一份到前端，后端一改，前端就静默排错。
+   *   代价是多一次 list 请求（本项目可忽略）。
+   *
+   * ⚠️ 两层 try 是刻意的，别合并：
+   *   外层 = 写请求失败（真·操作失败，交给调用方翻译，比如 4090 = 重复订阅）；
+   *   内层 = 写**已经成功**、只是紧接着的刷新失败。这时必须说「操作已完成」，
+   *          否则页面会报「操作失败」—— 那是反向的谎（明明存上了却说没存上）。
+   */
+  async function writeAndSync(request) {
+    loading.value = true;
+    try {
+      await request;
+      try {
+        items.value = await http.get('/subscriptions');
+      } catch {
+        throw { code: -1, message: '操作已完成，但列表刷新失败，请刷新页面查看', status: 0 };
+      }
+    } finally {
+      loading.value = false;
+    }
+  }
 
   /** 同航线 + 同出发日 + 同邮箱 = 重复订阅（原型验收点：不重复订阅） */
   const findDuplicate = ({ from, to, departDate, email }) =>
@@ -90,49 +90,62 @@ export const useSubscriptionsStore = defineStore('subscriptions', () => {
     );
 
   /**
-   * 新建订阅
+   * 新建订阅 → POST /api/subscriptions
+   *
    * @param {{from:string,to:string,departDate:string,returnDate?:string|null,flight:object|null,basePrice:number,threshold:number,deadline:string,email:string,cabin?:string,passengers?:number}} payload
    *   returnDate 为往返的返程日（单程为 null）—— Cron 比价必须按「往返组合价」查，不能只查去程
-   *   @returns {{ok:boolean, item?:object}} ok=false 表示重复订阅
+   *   payload 只说业务语言（from / departDate…），数据库列名由后端翻译，这里不碰
+   * @returns {Promise<{ok:boolean}>} ok=false 表示「重复订阅」
+   *
+   * 两层防重是刻意的（与「前端体验门 / 后端防线」同一套思路）：
+   *   ① 先查本地列表 —— 命中就省掉一次注定 409 的请求（不用调接口能判的事，前端先判）
+   *   ② 后端唯一约束才是事实 —— 本地列表可能不全（比如刚被别处加过），
+   *      所以还要接住后端回的 409 / 4090。两处都撞不到，才真的写进去。
    */
-  function addSubscription(payload) {
+  async function addSubscription(payload) {
     const dup = findDuplicate(payload);
-    if (dup) return { ok: false, item: dup };
-    const item = {
-      id: `sub_${Date.now()}`,
-      status: 'active',
-      createdAt: nowText(),
-      currentPrice: payload.basePrice,
-      lastNotified: null,
-      ...payload,
-    };
-    items.value.unshift(item);
-    return { ok: true, item };
+    if (dup) return { ok: false };
+
+    try {
+      await writeAndSync(http.post('/subscriptions', payload));
+    } catch (e) {
+      // 4090 = 撞了数据库唯一索引（同航线 + 同出发日 + 同邮箱）
+      if (e.code === 4090) return { ok: false };
+      throw e; // 其它失败（断网 / 500…）交给页面提示
+    }
+
+    return { ok: true };
   }
 
-  /** 取消订阅 → 后端应同时停掉该条的 Cron 检查 */
-  function removeSubscription(id) {
-    items.value = items.value.filter((s) => s.id !== id);
-  }
-
-  /** 暂停 / 恢复（暂停期间后端跳过比价） */
-  function toggleStatus(id) {
-    const s = items.value.find((x) => x.id === id);
-    if (s) s.status = s.status === 'active' ? 'paused' : 'active';
+  /** 取消订阅 → DELETE /api/subscriptions/:id（后端同时停掉该条的比价） */
+  async function removeSubscription(id) {
+    await writeAndSync(http.delete(`/subscriptions/${id}`));
   }
 
   /**
-   * 改订阅配置：提醒阈值 / 通知邮箱 / 决策截止日 —— 改完实时生效（验收点）
-   * →【API】后端需同步更新该条订阅：Cron 比价目标、收信地址、决策期限
+   * 暂停 / 恢复 → PATCH /api/subscriptions/:id { status }
+   * 目标值由当前状态推出来（active ↔ paused），不由调用方传 —— 调用方只需给 id。
    */
-  function updateSubscription(id, patch) {
+  async function toggleStatus(id) {
     const s = items.value.find((x) => x.id === id);
-    if (s) Object.assign(s, patch);
+    if (!s) return;
+    const status = s.status === 'active' ? 'paused' : 'active';
+    await writeAndSync(http.patch(`/subscriptions/${id}`, { status }));
+  }
+
+  /**
+   * 改订阅配置 → PATCH /api/subscriptions/:id { threshold, email, deadline }
+   * @param {object} patch 只放要改的字段；后端用白名单过滤，其余键一律丢弃
+   */
+  async function updateSubscription(id, patch) {
+    await writeAndSync(http.patch(`/subscriptions/${id}`, patch));
   }
 
   return {
     items,
     logs,
+    loading,
+    fetchSubscriptions,
     findDuplicate,
     addSubscription,
     removeSubscription,

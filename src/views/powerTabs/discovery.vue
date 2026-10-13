@@ -131,9 +131,6 @@
       </div>
 
       <el-button type="primary" class="submit" @click="handleSearch">查询票价</el-button>
-
-      <!-- ⚠️ 临时探针按钮（后端连通性测试，验完删）：同时删脚本里的 probeHealth 与样式 .probe -->
-      <button class="probe" type="button" @click="probeHealth">测试 /api/health</button>
     </div>
 
     <!-- 热门航线 -->
@@ -155,7 +152,6 @@
 import { computed, onMounted, reactive, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ElMessage } from 'element-plus';
-import { http } from '../../api/index.js';
 import { AIRPORTS, findAirport } from '../../data/airports';
 import { useSettingsStore } from '../../stores/settings';
 
@@ -284,23 +280,6 @@ function validate() {
  *   ±3 / ±7            → 3 次（多一次查最优日的历史档位）
  */
 const API_CALLS_BY_FLEX = { fixed: 2, plus3: 3, plus7: 3, month: 2 };
-
-/**
- * ⚠️ 临时探针（后端连通性测试，验完即删）
- * 点一下调一次 `/api/health`，把返回打到浏览器控制台（F12 → Console）。
- * 验的是整条链路：页面 → vite 代理 → 本地函数运行器(3000) → api/health.js
- * 按约定：成功只打控制台，失败才弹提示。
- */
-async function probeHealth() {
-  try {
-    const data = await http.get('/health');
-    console.log('[探针] ✅ /api/health 通了，返回：', data);
-    console.log('[探针] 本次请求携带的 identityId =', data.identityId);
-  } catch (e) {
-    console.error('[探针] ❌ /api/health 失败：', e);
-    ElMessage.error(`探针失败：${e.message}`);
-  }
-}
 
 /** →【API】接入后这里改为真实请求，用量统计交给服务端，trackApiCall 删掉即可 */
 function handleSearch() {
@@ -512,23 +491,6 @@ onMounted(() => {
   font-size: 16px;
   font-weight: 700;
   border-radius: 12px;
-}
-
-/* ⚠️ 临时探针按钮（验完删） */
-.probe {
-  width: 100%;
-  height: 34px;
-  margin-top: 10px;
-  font-size: 12.5px;
-  color: #6b7280;
-  background: #fff;
-  border: 1px dashed #d1d5db;
-  border-radius: 10px;
-  cursor: pointer;
-}
-.probe:hover {
-  color: #2f6bff;
-  border-color: #2f6bff;
 }
 
 /* ---------- 热门航线 ---------- */

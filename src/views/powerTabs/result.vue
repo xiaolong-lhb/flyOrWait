@@ -382,43 +382,79 @@ async function askGoSubscriptions() {
   }
 }
 
-async function handleSubscribe() {
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.value)) {
-    ElMessage.warning('请填写正确的通知邮箱');
-    return;
+/**
+ * 订阅前的前端校验（体验层）
+ *
+ * 只做一件事：把「用户自己能改对」的错误在本地拦下来，省掉一次注定失败的请求。
+ * 这里刻意只查「用户有可能填错/填漏」的字段（阈值可被删空、邮箱可留空或写错）；
+ * 像 from / to / departDate / basePrice 这些来自查询条件与数据层、用户根本碰不到的，
+ * 不在前端查 —— 查了也是永远为真的死代码。
+ *
+ * ⚠️ 它不替代后端校验。后端仍会独立校验一遍，那是唯一挡得住 curl / Cron 等
+ *    旁路调用的防线（见 api/subscriptions/index.js 的 REQUIRED_FIELDS）。
+ *    两边各写一份是刻意的：前端求「即时 + 友好」，后端求「不可绕过」，目标不同。
+ *    （将来若嫌两处规则容易走样，可把它抽成一个前后端共用的模块，目前先各留一份。）
+ */
+function validateSubscribe() {
+  // 阈值是原生输入框，用户可删空 —— 这是目前唯一真会漏的必填项
+  const t = threshold.value;
+  if (t === '' || t === null || t === undefined) {
+    ElMessage.error('请填写降价提醒阈值');
+    return false;
   }
+
+  if (!email.value) {
+    ElMessage.error('请填写通知邮箱');
+    return false;
+  }
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.value)) {
+    ElMessage.error('通知邮箱格式不正确');
+    return false;
+  }
+
+  return true;
+}
+
+async function handleSubscribe() {
+  if (!validateSubscribe()) return;
 
   // 出发日：固定日期用用户选的；整月最优时用 Agent 挑出的最优日
   const departDate = params.departDate || data.value.selected.date;
   const flight = pickedFlight.value;
 
-  // TODO(后端 · W4)：改为调「新建订阅」接口写入 Supabase，同时注册该条的 Cron 检查。
-  // 后端由 Vercel Cron 每天定时调用实时价 API 比价，低于阈值时发邮件。
-  // 【AI】降价邮件正文由 DeepSeek 生成（含紧迫度 + 当前价 vs 阈值对比 + 下一步建议），不用固定模板。
-  // 若已盯航班连续多日匹配不到 → 降级为「盯该航线最低价」并邮件告知用户。
-  const res = subscriptions.addSubscription({
-    from: params.from,
-    to: params.to,
-    departDate,
-    // 往返：返程日（单程为 null）。往返不支持灵活日期，故 departDate 必为用户所选，两者恒定配对
-    returnDate: params.returnDate,
-    // 盯价航班：只存展示与匹配需要的字段；没选中则监控基准回落为全列表最低价
-    flight: flight
-      ? {
-          id: flight.id,
-          airline: flight.airline,
-          departTime: flight.departTime,
-          stopText: flight.stopText,
-        }
-      : null,
-    basePrice: flight ? flight.price : data.value.lowestPrice,
-    threshold: threshold.value,
-    deadline: deadline.value,
-    email: email.value,
-    // 舱位与人数会显著影响比价结果，Cron 回查时必须带上
-    cabin: params.cabin,
-    passengers: params.passengers,
-  });
+  // 写入后端（POST /api/subscriptions）。字段只说业务语言，数据库列名由后端翻译。
+  // 后端由 Vercel Cron 每天定时调用实时价 API 比价，低于阈值时发邮件；
+  // 【AI】降价邮件正文由 DeepSeek 生成（含紧迫度 + 当前价 vs 阈值对比 + 下一步建议）。
+  let res;
+  try {
+    res = await subscriptions.addSubscription({
+      from: params.from,
+      to: params.to,
+      departDate,
+      // 往返：返程日（单程为 null）。往返不支持灵活日期，故 departDate 必为用户所选，两者恒定配对
+      returnDate: params.returnDate,
+      // 盯价航班：只存展示与匹配需要的字段；没选中则监控基准回落为全列表最低价
+      flight: flight
+        ? {
+            id: flight.id,
+            airline: flight.airline,
+            departTime: flight.departTime,
+            stopText: flight.stopText,
+          }
+        : null,
+      basePrice: flight ? flight.price : data.value.lowestPrice,
+      threshold: threshold.value,
+      deadline: deadline.value,
+      email: email.value,
+      // 舱位与人数会显著影响比价结果，Cron 回查时必须带上
+      cabin: params.cabin,
+      passengers: params.passengers,
+    });
+  } catch (e) {
+    // 断网 / 500 这类真正的失败才弹；成功不弹（约定）
+    ElMessage.error(e.message || '订阅失败，请稍后重试');
+    return;
+  }
 
   if (!res.ok) {
     ElMessage.warning('这条航线已经在监控中，可在「我的订阅」里查看或修改');
