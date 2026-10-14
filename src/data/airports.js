@@ -1,9 +1,10 @@
 /**
  * 常用机场 / 城市列表（MVP 阶段用固定列表，后续可替换为 API 动态搜索）
  *
+ * 范围：国内 + 中国港澳台（MVP 只做国内及港澳台航线，暂不覆盖国际）
  * code  —— IATA 三字码，作为表单与接口的实际传参
  * city  —— 中文城市名，用于界面展示
- * type  —— domestic 国内 / region 中国港澳台 / international 国际
+ * type  —— domestic 国内 / region 中国港澳台
  */
 export const AIRPORTS = [
   // 国内
@@ -30,24 +31,6 @@ export const AIRPORTS = [
   { code: 'HKG', city: '中国香港', type: 'region' },
   { code: 'MFM', city: '中国澳门', type: 'region' },
   { code: 'TPE', city: '中国台湾', type: 'region' },
-
-  // 国际
-  { code: 'TYO', city: '东京', type: 'international' },
-  { code: 'OSA', city: '大阪', type: 'international' },
-  { code: 'SEL', city: '首尔', type: 'international' },
-  { code: 'BKK', city: '曼谷', type: 'international' },
-  { code: 'SIN', city: '新加坡', type: 'international' },
-  { code: 'KUL', city: '吉隆坡', type: 'international' },
-  { code: 'HKT', city: '普吉岛', type: 'international' },
-  { code: 'DPS', city: '巴厘岛', type: 'international' },
-  { code: 'HAN', city: '河内', type: 'international' },
-  { code: 'SGN', city: '胡志明市', type: 'international' },
-  { code: 'DXB', city: '迪拜', type: 'international' },
-  { code: 'LON', city: '伦敦', type: 'international' },
-  { code: 'PAR', city: '巴黎', type: 'international' },
-  { code: 'NYC', city: '纽约', type: 'international' },
-  { code: 'LAX', city: '洛杉矶', type: 'international' },
-  { code: 'SYD', city: '悉尼', type: 'international' },
 ];
 
 /** 按三字码查机场，找不到返回 undefined */

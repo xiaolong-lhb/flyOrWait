@@ -226,7 +226,7 @@ const subscriptions = useSubscriptionsStore();
  * ------------------------------------------------------------------------ */
 const params = {
   from: route.query.from || 'SZX',
-  to: route.query.to || 'TYO',
+  to: route.query.to || 'PEK',
   departDate: route.query.departDate || null,
   returnDate: route.query.returnDate || null,
   cabin: route.query.cabin || 'economy',

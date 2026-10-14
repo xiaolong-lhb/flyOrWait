@@ -14,6 +14,9 @@ dist-ssr
 coverage
 *.local
 
+# 第三方数据源的原始返回样本（探路时存下的实物，含真实票价，不进版本库）
+samples/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

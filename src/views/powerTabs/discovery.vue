@@ -187,7 +187,7 @@ const HOT_ROUTES = [
 const form = reactive({
   tripType: 'oneway', // oneway 单程 / round 往返
   from: 'SZX',
-  to: 'TYO',
+  to: 'PEK',
   departDate: '',
   returnDate: '',
   cabin: 'economy',

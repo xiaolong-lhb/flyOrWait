@@ -318,6 +318,10 @@ export function buildMockResult(params) {
 
   /* ---------------- ⑥ 延展建议（hints）------------------------------- */
   const hints = [];
+  // ⚠️ TODO（已知缺陷，主人 10-13 决定本轮不修；**移植到后端判据时务必一并修掉**）：
+  //   ① 只判了「有中转」，没判「中转真的更便宜」→ 中转 ¥3,200 / 直飞 ¥2,800 时会输出「省 ¥-400」
+  //   ② directMin 未防「该航线全是中转」→ Math.min(...[]) = Infinity，会输出「省 ¥Infinity」
+  //   ③ 「多约 2h45m」是硬编码，须改为 transferCheapest.duration − 最快直飞.duration（需解析时长字符串）
   if (transferCheapest) {
     hints.push({
       type: 'transfer',
@@ -330,12 +334,10 @@ export function buildMockResult(params) {
       text: `灵活出发：若日期可挪，${cheapest.shortDate} 更便宜 ¥${(selected.price - cheapest.price).toLocaleString()} —— 在查询页选「±3 天 / 整月最优」我直接帮你锁定。`,
     });
   }
-  if (level === 'high') {
-    hints.push({
-      type: 'seat',
-      text: '价格偏高，常见原因是低价舱位已售完（只剩高价舱）。若行程已定，建议尽早在下方设好阈值，把「等」交给监控。',
-    });
-  }
+  // 原「价格偏高是因为低价舱位已售完」那条已删除（主人 10-13 拍板）：
+  // 舱位库存拿不到（外部源不返回），这句是**编造的因果**，违反「不编造」红线；
+  // 且「价格偏高」本身已由 reasoning 第 4 条解释，留着是同一句话说两遍。
+  // → 后端契约硬约束：拿不到数据的建议**不生成**，而不是编一句顶上。
 
   return {
     params,
