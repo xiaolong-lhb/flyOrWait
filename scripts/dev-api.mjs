@@ -6,7 +6,14 @@
  *                      api/subscriptions/[id].js → /api/subscriptions/123（[id] 自动进 req.query）
  *   ② 注入 (req, res)  给每个 handler 喂上 Node 原生的 req/res，外加 query / body
  *   ③ 读 .env.local    相当于线上的环境变量面板，后端读 Key 全靠它
- *   ④ 改动即生效       每次请求重新加载文件，不用重启（对应线上「重新部署」）
+ *   ④ 改动即生效       每个请求都会重新加载**路由文件**本身（api/xxx.js）；
+ *                      但它们 import 的零件（_apify / _judge / _compose …）受 ESM 模块缓存
+ *                      影响，光靠这一步刷不到 ⇒ npm run dev:api 改用 `node --watch-path`
+ *                      对 api/ 与 scripts/ 做**目录级监视**，一有改动就重启整个进程
+ *                      （对应线上「重新部署」）。
+ *                      ⚠️ 别改回 `--watch`：它只监视「入口点的 import 图」，而本文件是
+ *                      **运行时动态 import** 路由文件的，那些零件根本不在图里 ⇒
+ *                      实测改 api/_judge.js 不会触发重启（只有 --watch-path 才会）。
  *
  * 用法：npm run dev:api      （前端另开一个终端跑 npm run dev）
  */
@@ -180,5 +187,5 @@ const server = createServer(async (req, res) => {
 
 server.listen(PORT, () => {
   console.log(`[api] 本地函数运行器已启动  http://localhost:${PORT}/api/health`);
-  console.log('[api] 扫描目录：api/   改完文件保存即生效，不用重启');
+  console.log('[api] 扫描目录：api/   改路由文件即生效；改零件自动重启（--watch-path）');
 });

@@ -1,8 +1,8 @@
 <template>
   <div class="result">
-    <!-- ① 查询条件回显条 -->
-    <!-- 说明：任意时刻的判断都基于「此刻报价」，会过期。若后续需要告知数据新鲜度，
-         可在后端返回 snapshotAt 后于此处补一行时间展示。 -->
+    <!-- ① 查询条件回显条
+         说明：任意时刻的判断都基于「此刻报价」，会过期 —— 具体的快照时间在下方的
+         `.fresh` 那一行（数据回来之后才显示，等待态里还没有快照可报）。 -->
     <div class="cond">
       <span class="r">{{ airportLabel(params.from) }}</span>
       <span class="dot">→</span>
@@ -19,200 +19,272 @@
       <a class="edit" @click="handleEdit">修改</a>
     </div>
 
-    <!-- ② 答案①：哪天出发最便宜（横向 · 仅日期不固定时出现）
-         【AI + API】真实实现：Agent 扫日历求最优出发日，再查该日的历史档位（多一次调用） -->
-    <div v-if="data.dateAnswer" class="ans-card ans1">
-      <div class="ans-head">
-        <span class="snap">扫描 {{ data.dateAnswer.scannedDays }} 天</span>
-      </div>
-      <div class="verdict">
-        <span class="vt">最优出发日 {{ data.dateAnswer.bestDate }}</span>
-        <span class="vsub">
-          ¥{{ data.dateAnswer.bestPrice.toLocaleString() }} · {{ data.dateAnswer.savedText }}
-        </span>
-      </div>
-      <div class="ans-note">
-        {{ data.dateAnswer.historyText }} —— 这一天「便宜」只说明日期划算；今天要不要下手，
-        看下面的购买建议。
+    <!-- ⚠️ 三态互斥，且必须是**相邻**兄弟节点（v-if / v-else-if / v-else-if）：
+         ① 查询中 ② 查询失败 ③ 有数据
+         为什么「进页面先看到等待态」是必须的，而不是可选的优化：
+         后端要现场爬 Google 航班日历，**实测 20~60 秒**。这几十秒里如果没有整屏反馈，
+         用户只会看到一个空页面，第一反应是「坏了」然后关掉、白花一次钱。 -->
+    <div v-if="loading" class="state">
+      <div class="spin" aria-hidden="true"></div>
+      <p class="state-t">正在实时查询票价…</p>
+      <p class="state-s">
+        正在直连航司与比价源，最长约 60 秒（通常 20~40 秒）。<br />
+        请保持页面打开 —— 已等待 {{ elapsed }} 秒
+      </p>
+    </div>
+
+    <div v-else-if="error" class="state err">
+      <p class="state-t">查询失败</p>
+      <p class="state-s">{{ error }}</p>
+      <div class="state-act">
+        <button class="btn narrow" @click="reload">重试</button>
+        <a class="link-set" @click="handleEdit">修改查询条件</a>
       </div>
     </div>
 
-    <!-- ③ 答案②：购买时机（纵向 · 永远有 · 主角）
-         【AI】真实实现：DeepSeek 解释层，输入 = 当前最低价 + 62 天历史 + 典型区间 + 档位
-         红线：卡片里每个数字都必须能在下方航班列表 / 日历里找到出处，AI 不得编造价格 -->
-    <div class="ans-card ans2" :class="`lv-${data.timingAnswer.level}`">
-      <div class="verdict">
-        <span class="vt">{{ data.timingAnswer.verdictLabel }}</span>
-        <span class="vsub">
-          当前最低价 <b>¥{{ data.timingAnswer.currentPrice.toLocaleString() }}</b
-          >，处于近 62 天第 {{ data.timingAnswer.positionPct }} 百分位（{{
-            data.timingAnswer.levelLabel
-          }}），{{ data.timingAnswer.vsTypicalText }}
-        </span>
+    <template v-else-if="data">
+      <!-- 数据快照时间：任何「此刻这个价」的判断都会过期，如实说出来 -->
+      <div class="fresh">数据快照 {{ data.snapshotAt }} · 票价实时变动，这份结论会过期</div>
+
+      <!-- 后端说清了「哪块缺了什么」——原样转达，不要留个空白让用户猜 -->
+      <div v-if="noticeList.length" class="notices">
+        <p v-for="(n, i) in noticeList" :key="i">· {{ n }}</p>
       </div>
 
-      <!-- 「再等等」的三件套：触发条件 + 决策期限 + 数据依据，缺一条就不许出「再等等」-->
-      <div class="triple">
-        <div class="triple-t">{{ watchTitle }}</div>
-        <div class="tri">
-          <span class="tri-k">等到什么条件</span>
-          <span class="tri-v">{{ data.timingAnswer.action.condition }}</span>
+      <!-- ② 答案①：哪天出发最便宜（横向 · 仅「日期不固定」时出现）
+         【API】由后端 api/_compose.js::buildDateAnswer 从**同一份**日历窗口扫出来，
+         不需要额外调用（历史「多一次调用」的旧设计已随 mock 一起退休）。 -->
+      <div v-if="data.dateAnswer" class="ans-card ans1">
+        <div class="ans-head">
+          <span class="snap">扫描 {{ data.dateAnswer.scannedDays }} 天</span>
         </div>
-        <div class="tri">
-          <span class="tri-k">等到什么时候为止</span>
-          <span class="tri-v">{{ data.timingAnswer.action.deadlineText }}</span>
+        <div class="verdict">
+          <span class="vt">最优出发日 {{ data.dateAnswer.bestDate }}</span>
+          <span class="vsub">
+            ¥{{ data.dateAnswer.bestPrice.toLocaleString() }} · {{ data.dateAnswer.savedText }}
+          </span>
         </div>
-        <div class="tri">
-          <span class="tri-k">凭什么这么说</span>
-          <span class="tri-v">{{ data.timingAnswer.action.basisText }}</span>
+        <div class="ans-note">
+          {{ data.dateAnswer.historyText }} —— 这一天「便宜」只说明日期划算；今天要不要下手，
+          看下面的购买建议。
         </div>
       </div>
 
-      <div class="why">
-        <div class="why-t">我是怎么判断的</div>
-        <ul>
-          <li v-for="(line, i) in data.timingAnswer.reasoning" :key="i">{{ line }}</li>
-        </ul>
-      </div>
-
-      <div v-if="data.hints.length" class="ext">
-        <div class="ext-t">延展建议</div>
-        <p v-for="h in data.hints" :key="h.type">{{ h.text }}</p>
-      </div>
-    </div>
-
-    <!-- ⑤ 价格日历：弱化 + 可展开，作为答案①的原数据佐证
-         【API】真实实现：价格日历 API（Sky Scrapper getPriceCalendar / 聚合数据） -->
-    <details class="cal-fold">
-      <summary>📅 展开看全部 {{ data.calendar.length }} 天价格趋势（越绿越便宜，供你核对）</summary>
-      <div class="cal">
-        <div v-for="d in WEEK_DAYS" :key="d" class="d">{{ d }}</div>
-        <div v-for="n in calendarOffset" :key="`pad-${n}`" class="pad"></div>
-        <div
-          v-for="c in data.calendar"
-          :key="c.date"
-          class="c"
-          :class="{ sel: c.isSelected }"
-          :style="{ background: priceColor(c.price) }"
-        >
-          {{ c.day }}<small>¥{{ (c.price / 1000).toFixed(2) }}k</small>
+      <!-- ③ 答案②：购买时机（纵向 · 主角）
+         【API】由后端 api/_compose.js 从真实报价算出来（档位 / 百分位 / 典型区间 / 阈值）。
+         本轮**不接 AI**：文案是后端按数字拼的，卡片里每个数字都能在下方日历 / 航班列表里找到出处。
+         ⚠️ timingAnswer 可能是 null（样本不足 / 这天缺报价）—— 这时**如实说判断不了**，
+            绝不硬给一个档位。给一个编出来的结论，比说「不知道」更糟。 -->
+      <div v-if="data.timingAnswer" class="ans-card ans2" :class="`lv-${data.timingAnswer.level}`">
+        <div class="verdict">
+          <span class="vt">{{ data.timingAnswer.verdictLabel }}</span>
+          <span class="vsub">
+            当前最低价 <b>¥{{ data.timingAnswer.currentPrice.toLocaleString() }}</b
+            >，在{{ data.timingAnswer.basisLabel }}的报价中排第
+            {{ data.timingAnswer.positionPct }} 百分位（{{ data.timingAnswer.levelLabel }}），{{
+              data.timingAnswer.vsTypicalText
+            }}
+          </span>
         </div>
-      </div>
-      <div class="legend">
-        <span><i style="background: #86efac"></i>便宜</span>
-        <span><i style="background: #fdba74"></i>适中</span>
-        <span><i style="background: #fca5a5"></i>偏贵</span>
-        <span class="legend-tip">蓝框＝你选的日期</span>
-      </div>
-    </details>
 
-    <!-- ⑥ 航班列表
-         【API】真实实现：实时价 API（Sky Scrapper searchFlights / SerpApi google_flights），走代理
-         「当天最低」标记用的是 lowest_price 的正确用途：选哪一班，而不是该不该买 -->
-    <div class="sec-t">航班列表（实时价）</div>
-    <table class="f">
-      <thead>
-        <tr>
-          <th>航司</th>
-          <th>起飞</th>
-          <th>时长</th>
-          <th>类型</th>
-          <th>价格</th>
-          <th></th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr
-          v-for="f in data.flights"
-          :key="f.id"
-          :class="{ picked: f.id === pickedId }"
-          @click="togglePick(f)"
-        >
-          <td>{{ f.airline }}</td>
-          <td>{{ f.departTime }}</td>
-          <td>{{ f.duration }}</td>
-          <td>{{ f.stopText }}</td>
-          <td class="pr">
-            ¥{{ f.price.toLocaleString() }}
-            <span v-if="f.isLowest" class="lowest">当天最低</span>
-          </td>
-          <td>
-            <button class="pick" @click.stop="togglePick(f)">
-              {{ f.id === pickedId ? '已盯' : '盯价' }}
-            </button>
-          </td>
-        </tr>
-      </tbody>
-    </table>
-
-    <!-- ⑦ 订阅卡片：盯价航班 / 阈值 / 决策截止日 / 邮箱 -->
-    <div class="sub-card">
-      <div class="sec-t sub-title">订阅这条航线</div>
-
-      <div class="field">
-        <label>盯价航班</label>
-        <div v-if="pickedFlight" class="val">
-          <b>{{ pickedFlight.airline }}</b> {{ pickedFlight.departTime }} ·
-          {{ pickedFlight.stopText }} · ¥{{ pickedFlight.price.toLocaleString() }}
+        <!-- 「再等等」的三件套：触发条件 + 决策期限 + 数据依据，缺一条就不许出「再等等」-->
+        <div class="triple">
+          <div class="triple-t">{{ watchTitle }}</div>
+          <div class="tri">
+            <span class="tri-k">等到什么条件</span>
+            <span class="tri-v">{{ data.timingAnswer.action.condition }}</span>
+          </div>
+          <div class="tri">
+            <span class="tri-k">等到什么时候为止</span>
+            <span class="tri-v">{{ data.timingAnswer.action.deadlineText }}</span>
+          </div>
+          <div class="tri">
+            <span class="tri-k">凭什么这么说</span>
+            <span class="tri-v">{{ data.timingAnswer.action.basisText }}</span>
+          </div>
         </div>
-        <div v-else class="val muted">
-          未指定，以全列表最低价 ¥{{ data.lowestPrice.toLocaleString() }} 为基准
-        </div>
-        <div class="hint">在上方航班列表点「盯价」可指定；改选其他航班时阈值会同步更新</div>
-      </div>
 
-      <div class="field">
-        <label>降价提醒阈值</label>
-        <div class="val">
-          ¥<input v-model.number="threshold" class="plain-input" type="number" min="0" step="10" />
+        <div class="why">
+          <div class="why-t">我是怎么判断的</div>
+          <ul>
+            <li v-for="(line, i) in data.timingAnswer.reasoning" :key="i">{{ line }}</li>
+          </ul>
         </div>
-        <div class="hint">
-          低于此价发邮件通知（默认取「典型区间下沿」与「当前价 × 0.95」中更低者，可手动改）
+
+        <div v-if="data.hints.length" class="ext">
+          <div class="ext-t">延展建议</div>
+          <p v-for="h in data.hints" :key="h.type">{{ h.text }}</p>
         </div>
       </div>
 
-      <div class="field">
-        <label>决策截止日</label>
-        <div class="val val-row">
-          <el-date-picker
-            v-model="deadline"
-            type="date"
-            format="YYYY-MM-DD"
-            value-format="YYYY-MM-DD"
-            :clearable="false"
-            :disabled-date="disableDeadline"
-            class="deadline-picker"
-          />
-          <span v-if="isRecommendedDeadline" class="rec">推荐</span>
+      <!-- 判不了的时候：占同一个位置，说清「为什么给不了」，并把出路给出来 -->
+      <div v-else class="ans-card ans2 no-verdict">
+        <div class="verdict">
+          <span class="vt">这次给不了「该不该买」的建议</span>
+          <span class="vsub">{{ data.notices.judgement }}</span>
         </div>
-        <div class="hint">到这天还没跌到阈值，我们会提醒你直接下单（系统推荐：起飞前 21 天）</div>
+        <div class="ans-note">
+          宁可告诉你「还没法判断」，也不编一个档位出来。下面的价格日历和航班列表仍然是真实报价。
+        </div>
       </div>
 
-      <div class="field">
-        <label>通知邮箱</label>
-        <div class="val val-row">
-          <input
-            v-model.trim="email"
-            class="plain-input wide"
-            type="email"
-            placeholder="请输入邮箱"
-          />
-          <a class="link-set" @click="goSetting">去设置</a>
+      <!-- ⑤ 价格日历：弱化 + 可展开，作为答案①的原数据佐证
+         【API】真实实现：Apify 的 Google Flights 价格日历（见后端 api/_apify.js）
+         ⚠️ 颜色按后端给的 level 上色（low / typical / high），**不再按 min~max 自己划三档** ——
+            level 与上面「该不该买」是同一套分位算出来的，两处口径才不会打架。 -->
+      <details class="cal-fold">
+        <summary>
+          📅 展开看 {{ data.monthLabel }} 价格趋势（{{ data.dayCount }} 天有报价，越绿越便宜）
+        </summary>
+        <div class="cal">
+          <div v-for="d in WEEK_DAYS" :key="d" class="d">{{ d }}</div>
+          <div v-for="n in calendarOffset" :key="`pad-${n}`" class="pad"></div>
+          <!-- ⚠️ price 为 null = 这天没有报价（窗口够不到，或数据源缺日）。
+               这类格子只显示灰色「—」：既不能显示 ¥0.00k 这种凭空冒出来的数字，
+               也不能用白字（中性灰底 + 白字等于看不见），所以文字色要单独降下来。 -->
+          <div
+            v-for="c in data.calendar"
+            :key="c.date"
+            class="c"
+            :class="{ sel: c.isSelected }"
+            :style="{
+              background: priceColor(c.level),
+              color: c.price === null ? '#6b7280' : undefined,
+            }"
+          >
+            {{ c.day }}<small>{{ cellPrice(c) }}</small>
+          </div>
         </div>
-        <div class="hint">降价时邮件提醒，不填写邮箱则默认按照设置的邮箱发送</div>
+        <div class="legend">
+          <span><i style="background: #86efac"></i>便宜</span>
+          <span><i style="background: #fdba74"></i>适中</span>
+          <span><i style="background: #fca5a5"></i>偏贵</span>
+          <span><i style="background: #e5e7eb"></i>这天没报价</span>
+          <span class="legend-tip">蓝框＝你选的日期</span>
+        </div>
+      </details>
+
+      <!-- ⑥ 航班列表
+         【API】真实实现：SerpApi google_flights（见后端 api/_serp.js）。
+         「当天最低」标记用的是 lowest_price 的正确用途：选哪一班，而不是该不该买。
+         ⚠️ 列表可能为空（源挂了 / 这天方案都没给价）→ 空着必须说出来，不能无声无息留个空表 -->
+      <div class="sec-t">航班列表（实时价）</div>
+      <table v-if="data.flights.length" class="f">
+        <thead>
+          <tr>
+            <th>航司</th>
+            <th>起飞</th>
+            <th>时长</th>
+            <th>类型</th>
+            <th>价格</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr
+            v-for="f in data.flights"
+            :key="f.id"
+            :class="{ picked: f.id === pickedId }"
+            @click="togglePick(f)"
+          >
+            <td>{{ f.airline }}</td>
+            <td>{{ f.departTime }}</td>
+            <td>{{ f.duration }}</td>
+            <td>{{ f.stopText }}</td>
+            <td class="pr">
+              ¥{{ f.price.toLocaleString() }}
+              <span v-if="f.isLowest" class="lowest">当天最低</span>
+            </td>
+            <td>
+              <button class="pick" @click.stop="togglePick(f)">
+                {{ f.id === pickedId ? '已盯' : '盯价' }}
+              </button>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+      <div v-else class="empty">
+        这次没取到航班列表（原因见上方提示）。你仍然可以直接按本条线路的最低价 ¥{{
+          data.lowestPrice.toLocaleString()
+        }}
+        订阅盯价。
       </div>
 
-      <button class="btn" @click="handleSubscribe">订阅监控</button>
-    </div>
+      <!-- ⑦ 订阅卡片：盯价航班 / 阈值 / 决策截止日 / 邮箱 -->
+      <div class="sub-card">
+        <div class="sec-t sub-title">订阅这条航线</div>
+
+        <div class="field">
+          <label>盯价航班</label>
+          <div v-if="pickedFlight" class="val">
+            <b>{{ pickedFlight.airline }}</b> {{ pickedFlight.departTime }} ·
+            {{ pickedFlight.stopText }} · ¥{{ pickedFlight.price.toLocaleString() }}
+          </div>
+          <div v-else class="val muted">
+            未指定，以全列表最低价 ¥{{ data.lowestPrice.toLocaleString() }} 为基准
+          </div>
+          <div class="hint">在上方航班列表点「盯价」可指定；改选其他航班时阈值会同步更新</div>
+        </div>
+
+        <div class="field">
+          <label>降价提醒阈值</label>
+          <div class="val">
+            ¥<input
+              v-model.number="threshold"
+              class="plain-input"
+              type="number"
+              min="0"
+              step="10"
+            />
+          </div>
+          <div class="hint">
+            低于此价发邮件通知（默认取「典型区间下沿」与「当前价 × 0.95」中更低者，可手动改）
+          </div>
+        </div>
+
+        <div class="field">
+          <label>决策截止日</label>
+          <div class="val val-row">
+            <el-date-picker
+              v-model="deadline"
+              type="date"
+              format="YYYY-MM-DD"
+              value-format="YYYY-MM-DD"
+              :clearable="false"
+              :disabled-date="disableDeadline"
+              class="deadline-picker"
+            />
+            <span v-if="isRecommendedDeadline" class="rec">推荐</span>
+          </div>
+          <div class="hint">到这天还没跌到阈值，我们会提醒你直接下单（系统推荐：起飞前 21 天）</div>
+        </div>
+
+        <div class="field">
+          <label>通知邮箱</label>
+          <div class="val val-row">
+            <input
+              v-model.trim="email"
+              class="plain-input wide"
+              type="email"
+              placeholder="请输入邮箱"
+            />
+            <a class="link-set" @click="goSetting">去设置</a>
+          </div>
+          <div class="hint">降价时邮件提醒，不填写邮箱则默认按照设置的邮箱发送</div>
+        </div>
+
+        <button class="btn" @click="handleSubscribe">订阅监控</button>
+      </div>
+    </template>
   </div>
 </template>
 
 <script setup>
-import { computed, ref, watch } from 'vue';
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { airportLabel } from '../../data/airports';
-import { buildMockResult } from '../../data/mockResult';
+import { useResultStore } from '../../stores/result';
 import { useSettingsStore } from '../../stores/settings';
 import { useSubscriptionsStore } from '../../stores/subscriptions';
 
@@ -220,6 +292,7 @@ const route = useRoute();
 const router = useRouter();
 const settings = useSettingsStore();
 const subscriptions = useSubscriptionsStore();
+const result = useResultStore();
 
 /* ---------------------------------------------------------------------------
  * 查询参数：来自查询页的 router query
@@ -234,6 +307,23 @@ const params = {
   flexibility: route.query.flexibility || 'fixed',
 };
 
+/**
+ * 当前条件 → 后端要的查询参数（空值不传，URL 干净）。
+ * 「发起查询」与「回查询页修改」共用它 —— 一处生成，两处不会走样。
+ */
+function currentQuery() {
+  const q = {
+    from: params.from,
+    to: params.to,
+    cabin: params.cabin,
+    passengers: String(params.passengers),
+    flexibility: params.flexibility,
+  };
+  if (params.departDate) q.departDate = params.departDate;
+  if (params.returnDate) q.returnDate = params.returnDate;
+  return q;
+}
+
 const CABIN_LABEL = {
   economy: '经济舱',
   premium: '超级经济舱',
@@ -245,25 +335,68 @@ const cabinLabel = CABIN_LABEL[params.cabin] ?? '经济舱';
 const WEEK_DAYS = ['一', '二', '三', '四', '五', '六', '日'];
 
 /* ---------------------------------------------------------------------------
- * ⚠️ MOCK 数据入口：真实实现时这里要换成
- *    ① 并发请求「实时价 API + 价格日历 API」（走 Serverless 代理，key 不进前端）
- *    ② 把真实数据喂给 DeepSeek，拿回答案②（购买时机）的推理与文案
- *    详见 src/data/mockResult.js 顶部说明
+ * 真实数据入口：进页面就查一次
+ *
+ * 一次请求拿回整页数据（价格日历 + 该不该买 + 航班列表），由后端 api/result.js 聚合。
+ * 为什么不在前端并发打两个接口：见那个文件顶部 —— 核心是「答案①与答案②必须建立在
+ * 同一份窗口数据上」，交给前端拼等于把口径交给两个异步回调的先后顺序。
+ *
+ * ⚠️ 这一次查询要 20~60 秒（后端要现场爬 Google 航班日历），
+ *    所以整屏等待态不是「优化」，是**必须**：否则这几十秒里用户看到的是空白页，会以为坏了。
  * ------------------------------------------------------------------------ */
-const data = computed(() => buildMockResult(params));
+const data = computed(() => result.data);
+const loading = computed(() => result.loading);
+const error = computed(() => result.error);
+
+/** 已等待秒数 —— 让等待可感知（静止的转圈会让人怀疑卡死） */
+const elapsed = ref(0);
+let ticker = null;
+
+/**
+ * 查一次（进页面时 + 失败后点「重试」都是它）。
+ * 计时器只覆盖这一次请求的生命周期：请求结束就停表。
+ */
+async function reload() {
+  elapsed.value = 0;
+  clearInterval(ticker);
+  ticker = setInterval(() => {
+    elapsed.value += 1;
+  }, 1000);
+  try {
+    await result.fetchResult(currentQuery());
+  } finally {
+    clearInterval(ticker);
+    ticker = null;
+  }
+}
+
+onMounted(reload);
+onUnmounted(() => clearInterval(ticker));
 
 /** 「怎么等」的标题：结论是「等」时是三件套；结论是「买」时是兜底方案 */
 const watchTitle = computed(() =>
-  data.value.timingAnswer.verdict === 'wait' ? '怎么等（三件套，缺一不可）' : '如果你还想再等等',
+  data.value?.timingAnswer?.verdict === 'wait' ? '怎么等（三件套，缺一不可）' : '如果你还想再等等',
 );
+
+/**
+ * 后端如实说明「哪一块缺了什么」，原样转达。
+ * judgement 那一条单独在答案②卡片里说，这里排除掉，免得同一句话说两遍。
+ */
+const noticeList = computed(() => {
+  const notices = data.value?.notices ?? {};
+  return Object.entries(notices)
+    .filter(([key]) => key !== 'judgement')
+    .map(([, text]) => text);
+});
 
 /* ---------------------------------------------------------------------------
  * 盯价（选一条航班作为监控基准；FlyOrWait 不卖票，不能下单）
  * MVP 做「航班级盯价」；若该航班连续多日匹配不到（售完/停飞），后端降级为「盯该航线最低价」
  * ------------------------------------------------------------------------ */
 const pickedId = ref('');
+// ⚠️ data 在「查询中」是 null ⇒ 这里必须可选链，否则 setup 阶段就会炸
 const pickedFlight = computed(
-  () => data.value.flights.find((f) => f.id === pickedId.value) ?? null,
+  () => data.value?.flights.find((f) => f.id === pickedId.value) ?? null,
 );
 
 /** 点「选」只是换盯价基准，列表高亮 + 下方订阅卡片回填已是反馈，不再弹提示 */
@@ -271,21 +404,19 @@ function togglePick(flight) {
   pickedId.value = pickedId.value === flight.id ? '' : flight.id;
 }
 
-/** 阈值：盯了航班用「该航班价 × 0.95」；没盯用数据层给的建议值 */
+/** 阈值：盯了航班用「该航班价 × 0.95」；没盯用后端给的建议值 */
 const threshold = ref(0);
 
 /** 通知邮箱：默认回填「设置」里存的默认邮箱（没设过则为空，可在这里临时改） */
 const email = ref(settings.email);
 
-watch(
-  pickedFlight,
-  (flight) => {
-    threshold.value = flight
-      ? Math.round((flight.price * 0.95) / 10) * 10
-      : data.value.suggestedThreshold;
-  },
-  { immediate: true },
-);
+/** 盯了 / 取消了航班 → 阈值跟着走（**初值**由下面的 watch(data) 负责补） */
+watch(pickedFlight, (flight) => {
+  if (!data.value) return;
+  threshold.value = flight
+    ? Math.round((flight.price * 0.95) / 10) * 10
+    : data.value.suggestedThreshold;
+});
 
 /* ---------------------------------------------------------------------------
  * 决策截止日（＝「等到什么时候为止」的那条线，用户自己的决定）
@@ -302,17 +433,38 @@ function toISODate(d) {
 const todayISO = toISODate(new Date());
 
 const recommendedDeadline = computed(() => {
-  const suggested = data.value.timingAnswer.action.deadline;
+  const suggested = data.value?.timingAnswer?.action.deadline;
   return suggested && suggested >= todayISO ? suggested : todayISO;
 });
 
-/** 用户当前设定的截止日（只初始化一次，用户改后不再被覆盖） */
-const deadline = ref(recommendedDeadline.value);
+/** 用户当前设定的截止日。初值等数据到了再补（见下面 watch(data)），用户改过之后不再被覆盖 */
+const deadline = ref('');
 
 const isRecommendedDeadline = computed(() => deadline.value === recommendedDeadline.value);
 
-/** 出发日（整月最优时即 Agent 挑出的最优日）；截止日不得晚于它 */
-const departISO = computed(() => data.value.selected.date);
+/**
+ * 数据到达后补上「阈值」与「截止日」的初值。
+ *
+ * ⚠️ 为什么 watch 的是 data，而不是 pickedFlight：
+ *    pickedFlight 在「没盯任何航班」时前后都是 null，**值没变 ⇒ watch 不触发**，
+ *    阈值就会一直停在 0。只有 watch(data) 才能保证「数据一到就补上初值」。
+ * ⚠️ 这条 watch 必须放在 deadline 声明**之后**：immediate 会立即同步执行回调，
+ *    放到前面会撞上 const 的暂时性死区（TDZ）当场报错。
+ */
+watch(
+  data,
+  (d) => {
+    if (!d) return;
+    threshold.value = pickedFlight.value
+      ? Math.round((pickedFlight.value.price * 0.95) / 10) * 10
+      : d.suggestedThreshold;
+    deadline.value = recommendedDeadline.value;
+  },
+  { immediate: true },
+);
+
+/** 出发日（整月最优时即后端挑出的最优日）；截止日不得晚于它 */
+const departISO = computed(() => data.value?.selected.date ?? '');
 
 /** 禁用：今天之前；若出发日还没过，也禁用晚于出发日的日期 */
 function disableDeadline(date) {
@@ -336,31 +488,36 @@ function withWeekday(dateStr) {
 
 /** 日历首格偏移：让 1 号对齐到正确的星期列（周一开头） */
 const calendarOffset = computed(() => {
-  const [y, m] = data.value.monthLabel.split('-').map(Number);
+  const label = data.value?.monthLabel;
+  if (!label) return 0;
+  const [y, m] = label.split('-').map(Number);
   return (new Date(y, m - 1, 1).getDay() + 6) % 7;
 });
 
-/** 价格 → 颜色（按当月价格分位映射：便宜绿 / 适中橙 / 偏贵红） */
-function priceColor(price) {
-  const { monthMin, monthMax } = data.value;
-  const t = monthMax === monthMin ? 0 : (price - monthMin) / (monthMax - monthMin);
-  if (t <= 0.33) return '#86efac';
-  if (t <= 0.66) return '#fdba74';
-  return '#fca5a5';
+/**
+ * 档位 → 颜色。档位由**后端**给出（与「该不该买」同一套分位算出来的），
+ * 前端不再按 min~max 自己划三档 —— 两套算法必然在某个价格点上给出相反的答案，
+ * 那就会出现「结论说便宜、日历格却是橙色」这种自相矛盾的画面。
+ * level 为 null（样本不足，后端拒绝编造档位）→ 中性灰，明确表示「这天没有档位」。
+ */
+const LEVEL_COLOR = { low: '#86efac', typical: '#fdba74', high: '#fca5a5' };
+function priceColor(level) {
+  return LEVEL_COLOR[level] ?? '#e5e7eb';
+}
+
+/**
+ * 日历格里的价格文案。
+ * ⚠️ price 为 null（这天没有报价）时必须输出「—」——直接写 `c.price / 1000` 会得到
+ *    `¥0.00k`，那是**凭空冒出来的数字**，违反「不编造」这条红线。
+ *    后端在这种情况下给的就是 null（窗口够不到的日子会补成占位格），前端照实显示即可。
+ */
+function cellPrice(c) {
+  return c.price === null ? '—' : `¥${(c.price / 1000).toFixed(2)}k`;
 }
 
 /** 回查询页，并带上当前条件回填表单 */
 function handleEdit() {
-  const query = {
-    from: params.from,
-    to: params.to,
-    cabin: params.cabin,
-    passengers: String(params.passengers),
-    flexibility: params.flexibility,
-  };
-  if (params.departDate) query.departDate = params.departDate;
-  if (params.returnDate) query.returnDate = params.returnDate;
-  router.push({ name: 'discovery', query });
+  router.push({ name: 'discovery', query: currentQuery() });
 }
 
 /** 去「设置」页配置默认通知邮箱 */
@@ -918,6 +1075,103 @@ table.f tr.picked .pick {
 }
 .btn:hover {
   background: #1e50d8;
+}
+
+/* ---------- 三态：等待 / 失败 / 提示 ---------- */
+/* 等待态是 Apify 现场抓数据那 20~60 秒里用户唯一看得到的东西，
+   所以不能只放一个孤零零的转圈 —— 要说清「在干什么、要多久、还在动」。 */
+.state {
+  padding: 56px 20px;
+  text-align: center;
+}
+.state .spin {
+  width: 38px;
+  height: 38px;
+  margin: 0 auto 16px;
+  border: 3px solid #e5e7eb;
+  border-top-color: #2f6bff;
+  border-radius: 50%;
+  animation: spin 0.9s linear infinite;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.state-t {
+  margin: 0 0 8px;
+  font-size: 17px;
+  font-weight: 700;
+  color: #1f2937;
+}
+.state-s {
+  margin: 0;
+  font-size: 13.5px;
+  line-height: 1.8;
+  color: #6b7280;
+}
+.state.err .state-t {
+  color: #dc2626;
+}
+.state-act {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  margin-top: 20px;
+}
+.btn.narrow {
+  width: auto;
+  padding: 10px 28px;
+  font-size: 14px;
+}
+
+/* 数据快照时间：判断基于「此刻」，一定会过期，这句必须一直看得见 */
+.fresh {
+  margin: 0 0 10px;
+  font-size: 12px;
+  color: #9ca3af;
+  text-align: right;
+}
+
+/* 后端如实报出的「哪一块缺了什么」（航班没取到 / 部分方案没给价 / 航班日期与所选不同） */
+.notices {
+  padding: 10px 14px;
+  margin-bottom: 14px;
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: #8a6d1f;
+  background: #fffbf0;
+  border: 1px solid #f3e2c0;
+  border-radius: 10px;
+}
+.notices p {
+  margin: 0;
+}
+
+/* 判断不了时的答案②占位卡（占同位置，不给出编造的档位） */
+.ans2.no-verdict {
+  border-color: #e5e7eb;
+  background: #fafbfc;
+}
+.ans2.no-verdict .vt {
+  color: #6b7280;
+}
+.ans2.no-verdict .ans-note {
+  color: #4a5568;
+  background: #f1f3f6;
+}
+
+/* 航班列表为空时的说明：空着也要有个交代，不留一张空表 */
+.empty {
+  padding: 18px 16px;
+  font-size: 13.5px;
+  line-height: 1.7;
+  color: #6b7280;
+  text-align: center;
+  background: #fff;
+  border: 1px dashed #e5e7eb;
+  border-radius: 12px;
 }
 
 @media (max-width: 640px) {

@@ -5,7 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "dev:api": "node scripts/dev-api.mjs",
+    "dev:api": "node --watch-path=api --watch-path=scripts scripts/dev-api.mjs",
+    "probe:apify": "node scripts/probe-apify-calendar.mjs",
+    "probe:apify:coverage": "node scripts/probe-apify-coverage.mjs",
     "build": "vite build",
     "preview": "vite preview",
     "lint": "run-s \"lint:*\"",

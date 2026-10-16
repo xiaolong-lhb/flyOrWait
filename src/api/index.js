@@ -53,9 +53,15 @@ import { getIdentityId } from './identity.js';
 
 export const http = axios.create({
   baseURL: '/api',
-  // 30s：我们的接口要串联调外部数据源（SerpApi 往返 + price_insights），
-  // 15s 会误杀正常请求；超过 30s 基本是外部源挂了，早点失败更好。
-  timeout: 30000,
+  // 65s —— 刻意比后端**多 5 秒**，不是随手写的。
+  //
+  // /api/result 要串联两个外部源：Apify 现场爬 Google 航班日历（实测 20~60 秒）
+  // + SerpApi 取航班列表。后端自己的上限是 60 秒（见根目录 vercel.json 的 maxDuration）。
+  //
+  // 三层超时必须**由内到外逐层放大**，否则最外层会抢先掐断，用户拿到的就只剩一句
+  // 没有信息量的「网络异常」——明明后端已经准备好了一句能看懂的中文报错。
+  //   Apify 客户端 55s  →  后端函数 60s  →  浏览器 65s
+  timeout: 65000,
   headers: { 'Content-Type': 'application/json' },
 });
 

@@ -145,7 +145,9 @@
       </span>
     </div>
 
-    <p class="hint">登录后可同步订阅与通知记录 · 当前为本地预览，数据来自 Mock</p>
+    <p class="hint">
+      票价与日历均来自实时查询（Google Flights 数据链路），价格随行情变动，仅供参考
+    </p>
   </div>
 </template>
 <script setup>
