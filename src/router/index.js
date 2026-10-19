@@ -39,6 +39,13 @@ const router = createRouter({
         },
       ],
     },
+    {
+      // 兜底：任何不存在的路径都送回查询页。
+      // 不补这条的话，createWebHistory 下访问错路径匹配不到任何路由，
+      // <router-view> 渲染为空 —— 用户看到的是一片纯白，且不知道发生了什么。
+      path: '/:pathMatch(.*)*',
+      redirect: '/',
+    },
   ],
 });
 
