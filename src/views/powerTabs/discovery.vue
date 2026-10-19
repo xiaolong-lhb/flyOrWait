@@ -155,12 +155,9 @@ import { computed, onMounted, reactive, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ElMessage } from 'element-plus';
 import { AIRPORTS, findAirport } from '../../data/airports';
-import { useSettingsStore } from '../../stores/settings';
 
 const route = useRoute();
 const router = useRouter();
-/** 本地用量账本：每次查询按数据源用量累加，设置页据此展示「本月 API 用量」 */
-const settings = useSettingsStore();
 
 /** 舱位选项 */
 const CABINS = [
@@ -276,17 +273,9 @@ function validate() {
   return true;
 }
 
-/**
- * 一次查询的 API 调用次数（对齐已定的调用模型）
- *   固定日期 / 整月最优 → 2 次（1 次日历 + 1 次单日航班含时机数据）
- *   ±3 / ±7            → 3 次（多一次查最优日的历史档位）
- */
-const API_CALLS_BY_FLEX = { fixed: 2, plus3: 3, plus7: 3, month: 2 };
-
-/** →【API】接入后这里改为真实请求，用量统计交给服务端，trackApiCall 删掉即可 */
+/** 发起查询：只负责校验 + 跳转，跳过去由结果页真正打后端（次数由后端记账） */
 function handleSearch() {
   if (!validate()) return;
-  settings.trackApiCall(API_CALLS_BY_FLEX[form.flexibility] ?? 2);
   router.push({ name: 'result', query: toQuery() });
 }
 

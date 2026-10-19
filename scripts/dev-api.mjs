@@ -35,6 +35,15 @@ try {
   console.log('[env] 没有 .env.local（还没密钥，接口会读到空值）');
 }
 
+// ── 启动时报出「两个数据源各走哪条路」──
+// 为什么值得专门打一行：回放/真机**只在启动时读一次环境变量**，一旦启动就改不了，
+// 而两者的代价差 150 倍（回放 0 元、真机约 $0.018/次）。看不见模式就分不清
+// 「这次测试花钱了没有」，也分不清「结果页是录像还是实时价」。
+// 开关从两处来：.env.local（持久，适合长期只跑回放）或命令行前缀（临时，适合插一次真机）。
+const replayOf = (v) => (v === '1' ? '回放（读 samples/，不花钱）' : '真机（走网络，花钱）');
+console.log(`[mode] 价格日历：${replayOf(process.env.APIFY_REPLAY)}`);
+console.log(`[mode] 航班列表：${replayOf(process.env.SERP_REPLAY)}`);
+
 /** 扫描 api/ 目录，把「文件路径」翻译成「路由表」 */
 async function collectRoutes(dir, prefix = '') {
   const routes = [];

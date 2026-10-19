@@ -30,6 +30,7 @@
 import { getPriceCalendar } from './_apify.js';
 import { searchFlights } from './_serp.js';
 import { buildCalendarSection, composeResult } from './_compose.js';
+import { logQuery } from './_queryLog.js';
 
 const CODE_RE = /^[A-Z]{3}$/;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -206,6 +207,14 @@ export default async function handler(req, res) {
     });
 
     res.status(200).json({ code: 0, message: 'ok', data });
+
+    // ── 记一次查询（给设置页的「本月查询次数」用）──
+    // ★ 刻意**不 await**、且吞掉错误：这只是附带记一笔账，
+    //   记账失败绝不能让用户的查询失败 —— 用户要的是票价，不是我们的统计。
+    //   放在响应之后，也就不会给用户增加任何等待时间。
+    logQuery(req.headers['x-owner-id']).catch((e) =>
+      console.error('[result] 记录查询次数失败（不影响结果）：', e),
+    );
   } catch (e) {
     // 走到这里说明是**我们自己的组装逻辑**出了问题（不是外部源），回 500 才对
     fail(res, e, '结果组装');

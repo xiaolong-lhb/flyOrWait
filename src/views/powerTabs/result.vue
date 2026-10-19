@@ -33,8 +33,13 @@
       </p>
     </div>
 
+    <!--
+      失败态（A2）：内容区**只显示失败原因**，其余模块一个都不渲染
+      （日历/答案①②/航班/订阅卡全在下面的 v-else-if="data" 分支里，失败时 data 为 null）。
+      顶部那条查询条件是无 v-if 的常驻框架，留着是为了让用户看清「查的是什么」。
+    -->
     <div v-else-if="error" class="state err">
-      <p class="state-t">查询失败</p>
+      <p class="state-t">这条航线此刻查不到报价</p>
       <p class="state-s">{{ error }}</p>
       <div class="state-act">
         <button class="btn narrow" @click="reload">重试</button>
@@ -370,7 +375,19 @@ async function reload() {
   }
 }
 
-onMounted(reload);
+/**
+ * 进页面：① 拉一次用户设置（好让下面的订阅卡片有默认邮箱可填）
+ *        ② 发起本次比价查询
+ * 两件事互不依赖，并行发起 —— 设置那一路很轻（一个 GET），
+ * 不等它回来才去查票，免得白白把那几十秒的等待又往后推。
+ */
+onMounted(() => {
+  // 设置拿回来后再把邮箱补进草稿 —— 若用户手快已经在框里敲了，就不覆盖
+  settings.fetchSettings().then(() => {
+    if (!email.value) email.value = settings.email;
+  });
+  reload();
+});
 onUnmounted(() => clearInterval(ticker));
 
 /** 「怎么等」的标题：结论是「等」时是三件套；结论是「买」时是兜底方案 */
@@ -1110,9 +1127,6 @@ table.f tr.picked .pick {
   line-height: 1.8;
   color: #6b7280;
 }
-.state.err .state-t {
-  color: #dc2626;
-}
 .state-act {
   display: flex;
   align-items: center;
@@ -1120,6 +1134,28 @@ table.f tr.picked .pick {
   gap: 18px;
   margin-top: 20px;
 }
+
+/* 失败态（A2）：内容区只放失败原因 ⇒ 做成一张**左对齐**的卡片。
+   居中大字本来是用来配「整屏等待」的，失败时页面就这一块东西，居中会显得空。
+   下面这些特异性都比上面高，所以写在后面；不靠顺序取胜，但仍保持从低到高。 */
+.state.err {
+  padding: 20px 22px;
+  text-align: left;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: 14px;
+}
+.state.err .state-t {
+  color: #dc2626;
+}
+.state.err .state-s {
+  color: #7f1d1d;
+}
+/* 按钮跟着文字左对齐 —— 居中按钮配左对齐正文会很怪 */
+.state.err .state-act {
+  justify-content: flex-start;
+}
+
 .btn.narrow {
   width: auto;
   padding: 10px 28px;

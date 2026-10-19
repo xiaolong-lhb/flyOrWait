@@ -2,10 +2,14 @@
   <!-- v-loading：进页面拉取、以及每次写完重新拉时转圈 —— 让「数据正在从服务器更新」看得见 -->
   <div v-loading="loading" element-loading-background="rgba(255, 255, 255, 0.6)" class="subs">
     <template v-if="items.length">
-      <!-- 邮件总闸关着时提示一次（没订阅就不提这茬，关不关都无所谓） -->
-      <div v-if="!emailNotify" class="notice">
-        <span>邮件通知已关闭，降价时不会发邮件（订阅仍在正常监控）</span>
-        <a class="notice-link" @click="goSetting">去开启</a>
+      <!--
+        定时比价还没做 ⇒ 卡片上的价格**不会自动更新**，必须在最上面说清一次。
+        ⚠️ 原文案是「邮件通知已关闭，降价时不会发邮件（订阅仍在正常监控）」——
+           「仍在正常监控」是**反向的谎**：监控根本没实现。别再改回去。
+           （等 Cron + 通知真做出来，这句换回「邮件通知已关闭…去开启」）
+      -->
+      <div class="notice">
+        <span>定时比价尚未开通 —— 下面的价格是你订阅时查到的，暂时不会自动更新</span>
       </div>
 
       <!-- 监控中的航线（含已暂停，靠右上角 badge 区分） -->
@@ -23,13 +27,19 @@
         </div>
 
         <!--
-          meta：当前最低 与 上次通知 →【API】由 Cron 每天比价后回写（Supabase）
+          meta：上次价格（= 订阅那一刻查到的真实价，落库在 base_price）
+                + 提醒阈值 / 盯价航班 / 决策截止日 / 通知邮箱
           盯价航班 为 null 时，监控基准回落为「该航线全列表最低价」
         -->
         <div class="meta">
           <div class="cell">
-            当前最低
-            <b>{{ money(s.currentPrice) }}</b>
+            上次价格
+            <!--
+              ⚠️ 别改回 currentPrice：那是「由 Cron 每天比价后回写」的字段，
+                 Cron 没做 ⇒ 它永远停在创建时那个值或 null，显示出来会让人以为是实时价。
+                 basePrice 是**有据可依**的：就是用户订阅这条航线时查到的价格。
+            -->
+            <b>{{ money(s.basePrice) }}</b>
           </div>
 
           <!-- 提醒阈值：只有编辑态才变输入框，平时只读 -->
@@ -70,11 +80,6 @@
               class="mini-date"
             />
             <b v-else>{{ s.deadline }}</b>
-          </div>
-
-          <div class="cell">
-            上次通知
-            <b>{{ s.lastNotified || '—' }}</b>
           </div>
 
           <!-- 通知邮箱：只改这条订阅，不动「设置」里的默认邮箱 -->
@@ -126,7 +131,7 @@
           </tr>
         </tbody>
       </table>
-      <p v-else class="none">暂无通知记录 —— 跌破阈值后，这里会记下每一次提醒</p>
+      <p v-else class="none">定时比价尚未开通，暂无通知记录</p>
     </template>
 
     <!-- 空状态 -->
@@ -146,15 +151,10 @@ import { storeToRefs } from 'pinia';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { airportLabel } from '../../data/airports';
 import { useSubscriptionsStore } from '../../stores/subscriptions';
-import { useSettingsStore } from '../../stores/settings';
 
 const router = useRouter();
 const store = useSubscriptionsStore();
 const { items, logs, loading } = storeToRefs(store);
-
-/** 邮件总闸在「设置」里被关掉时，这里要提醒一声，否则用户会以为监控失效 */
-const settings = useSettingsStore();
-const { emailNotify } = storeToRefs(settings);
 
 const money = (n) => `¥${Number(n).toLocaleString()}`;
 
@@ -296,10 +296,6 @@ async function confirmRemove(s) {
 function goQuery() {
   router.push({ name: 'discovery' });
 }
-
-function goSetting() {
-  router.push({ name: 'setting' });
-}
 </script>
 
 <style scoped>
@@ -309,7 +305,7 @@ function goSetting() {
   padding: 28px 20px 60px;
 }
 
-/* ---------- 邮件总闸关闭提示 ---------- */
+/* ---------- 顶部提示（定时比价未开通 / 邮件关闭） ---------- */
 .notice {
   display: flex;
   align-items: center;
@@ -320,14 +316,6 @@ function goSetting() {
   background: #fff6e6;
   border: 1px solid #f3e0b8;
   border-radius: 12px;
-}
-.notice-link {
-  margin-left: auto;
-  font-size: 13px;
-  font-weight: 600;
-  color: #2f6bff;
-  white-space: nowrap;
-  cursor: pointer;
 }
 
 /* ---------- 区块标题 ---------- */

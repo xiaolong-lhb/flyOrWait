@@ -25,39 +25,33 @@
           <b>邮件通知</b>
           <small>价格跌破阈值时发邮件；关掉后订阅仍在监控，只是不再发信</small>
         </div>
-        <el-switch v-model="emailNotify" />
+        <el-switch v-model="emailNotify" :loading="saving" @change="saveNotify" />
       </div>
 
-      <!-- 本月 API 用量 →【API】接入后改为读服务端统计 -->
+      <!-- 本月查询次数（服务端统计，只读） -->
       <div class="row">
         <div class="lab">
-          <b>本月 API 用量</b>
-          <small>免费额度监控，防超额</small>
+          <b>本月查询次数</b>
+          <small>你在本月发起过多少次比价查询（服务端统计）</small>
         </div>
-        <div class="usage">
-          <div class="usage-top">
-            <span class="usage-num" :class="usageLevel">{{ apiUsed }} / {{ apiQuota }}</span>
-            <span class="usage-pct">{{ usagePercent }}%</span>
-          </div>
-          <div class="bar">
-            <i :class="usageLevel" :style="{ width: `${usagePercent}%` }"></i>
-          </div>
+        <div class="count">
+          <span class="count-num">{{ queryCount }}</span>
+          <span class="count-unit">次</span>
         </div>
       </div>
     </div>
   </div>
 </template>
-
 <script setup>
-import { computed, ref } from 'vue';
+import { onMounted, ref } from 'vue';
 import { storeToRefs } from 'pinia';
 import { ElMessage } from 'element-plus';
 import { useSettingsStore } from '../../stores/settings';
 
 const settings = useSettingsStore();
 
-/** 邮件开关直接双向绑定 store，拨一下立即生效（无需保存） */
-const { emailNotify } = storeToRefs(settings);
+/** 邮箱 / 开关 / 次数 都直接读 store，页面只负责展示与触发保存 */
+const { emailNotify, queryCount, saving } = storeToRefs(settings);
 
 /**
  * 邮箱草稿：回车或移开焦点即存
@@ -65,27 +59,37 @@ const { emailNotify } = storeToRefs(settings);
  */
 const email = ref(settings.email);
 
-function saveEmail() {
-  const v = email.value;
+/** 后端拉回来的邮箱到了就填进草稿（用户已经在敲的话不覆盖） */
+function syncDraft() {
+  if (!email.value) email.value = settings.email;
+}
+
+async function saveEmail() {
+  const v = email.value.trim();
   if (v && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v)) {
     ElMessage.warning('邮箱格式不正确');
     return;
   }
-  // →【API】接入后改为调「保存用户配置」接口
-  settings.email = v;
+  if (v === settings.email) return; // 没改就别白跑一趟后端
+  const ok = await settings.saveSettings({ email: v });
+  if (!ok) ElMessage.error(settings.error || '保存失败');
 }
 
-/* 用量展示：进度条按 70% / 100% 分三级变色，超限时数字照实显示 */
-const usagePercent = computed(() => {
-  const p = (settings.apiUsed / settings.apiQuota) * 100;
-  return Math.min(100, Math.round(p));
-});
+/** 开关拨动即存（拨动本身有视觉变化，不弹成功提示；失败才提示） */
+async function saveNotify() {
+  const ok = await settings.saveSettings({ notifyEnabled: emailNotify.value });
+  if (!ok) ElMessage.error(settings.error || '保存失败');
+}
 
-const usageLevel = computed(() => {
-  const p = settings.apiUsed / settings.apiQuota;
-  if (p >= 1) return 'over';
-  if (p >= 0.7) return 'warn';
-  return 'ok';
+/**
+ * 进页面拉一次后端配置，拉回来把邮箱回填进草稿。
+ */
+onMounted(async () => {
+  const ok = await settings.fetchSettings();
+  if (!ok) {
+    ElMessage.error(settings.error || '读取设置失败');
+  }
+  syncDraft();
 });
 </script>
 
@@ -139,54 +143,23 @@ const usageLevel = computed(() => {
   flex: none;
 }
 
-/* ---------- 用量 ---------- */
-.usage {
-  width: 220px;
-  flex: none;
-}
-.usage-top {
+/* ---------- 本月查询次数 ---------- */
+.count {
   display: flex;
   align-items: baseline;
-  justify-content: space-between;
-  margin-bottom: 6px;
+  gap: 4px;
+  width: 220px;
+  flex: none;
+  justify-content: flex-end;
 }
-.usage-num {
-  font-size: 15px;
-  font-weight: 700;
+.count-num {
+  font-size: 22px;
+  font-weight: 800;
+  color: #2f6bff;
+  line-height: 1;
 }
-.usage-pct {
-  font-size: 12px;
+.count-unit {
+  font-size: 12.5px;
   color: #9ca3af;
-}
-.bar {
-  height: 6px;
-  overflow: hidden;
-  background: #eef0f3;
-  border-radius: 999px;
-}
-.bar i {
-  display: block;
-  height: 100%;
-  border-radius: 999px;
-  transition: width 0.3s;
-}
-/* 三级：正常 / 接近上限 / 已超额 */
-.usage-num.ok {
-  color: #16a34a;
-}
-.bar i.ok {
-  background: #16a34a;
-}
-.usage-num.warn {
-  color: #b7791f;
-}
-.bar i.warn {
-  background: #b7791f;
-}
-.usage-num.over {
-  color: #dc2626;
-}
-.bar i.over {
-  background: #dc2626;
 }
 </style>
