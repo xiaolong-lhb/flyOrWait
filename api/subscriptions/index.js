@@ -17,6 +17,7 @@
  */
 import { getSupabase } from '../_supabase.js';
 import { toClient, toRow } from '../_translate.js';
+import { markExpiredRows, todayShanghai } from '../_expire.js';
 
 export default async function handler(req, res) {
   // 动态接口，显式声明任何一层都别缓存
@@ -59,6 +60,19 @@ async function listSubscriptions(ownerId, res) {
     return;
   }
 
+  // ★ 顺手把「出发日已过、还挂着 active/paused」的订阅标成 expired，并**写回数据库**。
+  //   不是只在返回时改个字段 —— 那样库里的 status 永远是错的，Cron / 导出 / 将来接的
+  //   任何读取方都得自己再算一遍，状态就没有唯一出处了。
+  //   没有过期行时这一步一次写都不发（markExpiredRows 里先筛 id，空就不请求）。
+  //   标记失败**不降级**：宁可报错，也不能让页面继续把过期订阅显示成「监控中」。
+  try {
+    const marked = await markExpiredRows(data);
+    if (marked) console.log(`[subscriptions] 已标记 ${marked} 条过期（owner=${ownerId}）`);
+  } catch (e) {
+    res.status(500).json({ code: 5000, message: e.message, data: null });
+    return;
+  }
+
   // 这行把查到的记录「逐条翻译」后再返回。注意左右两个 data 是两回事，别看混：
   //   右边的 data ← 上面 await 拿到的「行数组」，字段名是数据库那套（origin、base_price…）
   //   左边的 data ← 响应体三件套里的字段名，表示「这里装要返回给前端的东西」
@@ -77,6 +91,9 @@ async function listSubscriptions(ownerId, res) {
 /** 新建时必须有值的字段（对应数据库里 not null 的列），缺一个就整条不收 */
 const REQUIRED_FIELDS = ['from', 'to', 'departDate', 'basePrice', 'threshold', 'deadline', 'email'];
 
+// 「今天」的算法（东八区）与过期标记逻辑统一放在 api/_expire.js ——
+// 全项目只有那一份，别在这里另写一遍（两处时区口径不一致正是踩过的坑）。
+
 async function createSubscription(ownerId, req, res) {
   const payload = req.body ?? {};
 
@@ -85,6 +102,20 @@ async function createSubscription(ownerId, req, res) {
   );
   if (missing.length) {
     res.status(400).json({ code: 4000, message: `缺少必填项：${missing.join('、')}`, data: null });
+    return;
+  }
+
+  // ★ 出发日必须在未来。
+  //   不挡的话，一条「出发日已过」的订阅可以照样建出来 —— 它一出生就是过期的，
+  //   Cron 不会给它比价，列表里却会一直挂着。与其事后标记，不如在入口就不收。
+  //   先校格式再比大小：字符串比较只对 YYYY-MM-DD 成立，格式错会让比较得出错误结论。
+  const departDate = String(payload.departDate);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(departDate)) {
+    res.status(400).json({ code: 4000, message: '出发日格式应为 YYYY-MM-DD', data: null });
+    return;
+  }
+  if (departDate < todayShanghai()) {
+    res.status(400).json({ code: 4000, message: '出发日不能早于今天', data: null });
     return;
   }
 

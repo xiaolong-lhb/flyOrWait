@@ -1,9 +1,12 @@
 /**
  * 单条订阅   /api/subscriptions/:id
  *
- *   DELETE  取消订阅（删掉这条；它的通知流水由外键 on delete cascade 一起清）
+ *   DELETE  取消订阅（删掉这条；它的历史通知流水**保留**，外键 on delete set null 只把来源置空）
  *   PATCH   改配置：提醒阈值 / 通知邮箱 / 决策截止日（「我的订阅」编辑态点保存走这里）
  *           以及 暂停 / 恢复（status 在 active ↔ paused 之间切）
+ *           ⚠️ 已过期（expired）的订阅一律拒绝修改 —— 包括想把它改回 active。
+ *              expired 是系统按出发日判定的事实：读列表时由 api/_expire.js 写回库，
+ *              Cron 上线后由它兜底。不接受调用方写入或撤销。
  *
  * ── 身份 ──
  * 请求头 X-Owner-Id（前端拦截器自动带，见 src/api/index.js），对应数据库 owner_id。
@@ -123,6 +126,9 @@ function patchError(patch) {
     }
   }
   if (patch.status !== undefined) {
+    // 只放行用户在界面上真能切的两个值。
+    // 'expired' **不在**白名单里：它由系统按出发日判定并写回（读列表时标记，Cron 兜底），
+    // 不能由调用方写进来（否则「已过期」可以被伪造）。
     if (!['active', 'paused'].includes(patch.status)) return 'status 只能是 active 或 paused';
   }
   return '';
@@ -147,6 +153,37 @@ async function updateSubscription(ownerId, id, req, res) {
     return;
   }
 
+  // ★ 先读当前状态。过期的订阅是既成事实（航班已经飞了），不允许再改任何字段 ——
+  //   尤其不许把 status「复活」成 active，否则「已过期」这个状态就是可以伪造的，
+  //   Cron 靠它筛「该比价的」也就失去意义。
+  //   为什么不靠前端隐藏按钮：后端是唯一防线，前端藏起来不等于别人调不到。
+  //   顺带把 404 也在这里判掉 —— 读不到就是不存在（或不属于你）。
+  const { data: cur, error: curErr } = await getSupabase()
+    .from('subscriptions')
+    .select('status')
+    .eq('id', id)
+    .eq('owner_id', ownerId)
+    .maybeSingle();
+
+  if (curErr) {
+    res.status(500).json({ code: 5000, message: `读取订阅失败：${curErr.message}`, data: null });
+    return;
+  }
+
+  if (!cur) {
+    res.status(404).json({ code: 4040, message: '该订阅不存在', data: null });
+    return;
+  }
+
+  if (cur.status === 'expired') {
+    res.status(400).json({
+      code: 4000,
+      message: '该订阅已过期（出发日已过），不能再修改',
+      data: null,
+    });
+    return;
+  }
+
   // updated_at 得自己写：Supabase 不会自动维护它（没有触发器），
   // 不写的话这一列会一直停在创建时间，失去意义。
   const row = { ...patch, updated_at: new Date().toISOString() };
@@ -163,7 +200,8 @@ async function updateSubscription(ownerId, id, req, res) {
     return;
   }
 
-  // 同上：没匹配到行不是错误，得自己判 404
+  // 正常走不到这里（上面已经读过一次确认它存在）。留着是防竞态：
+  // 查完之后、update 之前被别人删掉，那时匹配 0 行，仍然该报 404 而不是假装成功。
   if (!data.length) {
     res.status(404).json({ code: 4040, message: '该订阅不存在', data: null });
     return;

@@ -32,7 +32,12 @@ export const useSubscriptionsStore = defineStore('subscriptions', () => {
   /** 订阅列表 —— 唯一来源是后端，进页面 fetchSubscriptions() 拉到什么就是什么 */
   const items = ref([]);
 
-  /** 通知流水 →【API】后端还没有对应接口，先保持空数组；接口补上后跟 items 一样拉取 */
+  /**
+   * 通知流水（降价提醒的历史记录）
+   *   形状：[{ id, from, to, price, status, notifiedAt }]，见 api/notifications.js
+   *   status 是枚举 'sent' / 'failed'，翻成人话由页面做（与 items 的 status 同一套做法）
+   *   谁来写入这张表：将来 Cron 比价跌破阈值时写；现在库里是测试数据
+   */
   const logs = ref([]);
 
   /** 是否正在和后端同步（进页面拉取、写完重新拉都算）→ 页面据此显示 loading */
@@ -58,6 +63,19 @@ export const useSubscriptionsStore = defineStore('subscriptions', () => {
   }
 
   /**
+   * 拉取通知记录 → GET /api/notifications
+   *
+   * 刻意**不动 loading**：它和 fetchSubscriptions 是并行发的两个请求，
+   * 谁先回来都把 loading 置 false 的话，另一个还在路上页面就提前撤掉转圈了。
+   * loading 只归「主内容」（订阅列表）管，通知记录是附加信息。
+   *
+   * 失败不吞，抛给页面 —— 但页面会区分对待：列表失败是致命的，记录失败只提醒一句。
+   */
+  async function fetchLogs() {
+    logs.value = await http.get('/notifications');
+  }
+
+  /**
    * 写操作的统一外壳：跑完这个写请求 → 重新拉一次列表，让后端的当前状态覆盖本地。
    *
    * ★ 前端不维护列表：不 unshift、不 filter、不 assign —— 顺序、条数、字段全由后端说了算。
@@ -69,12 +87,17 @@ export const useSubscriptionsStore = defineStore('subscriptions', () => {
    *   内层 = 写**已经成功**、只是紧接着的刷新失败。这时必须说「操作已完成」，
    *          否则页面会报「操作失败」—— 那是反向的谎（明明存上了却说没存上）。
    */
-  async function writeAndSync(request) {
+  async function writeAndSync(request, { refreshLogs = false } = {}) {
     loading.value = true;
     try {
       await request;
       try {
         items.value = await http.get('/subscriptions');
+        // 只有「取消订阅」需要刷记录：删订阅后，**没有航线快照的老行**会失去 join 结果，
+        // 不重拉的话页面还留着「有航线」的旧渲染，下次进页面才突然变空（前后不一致）。
+        // 有快照的行内容其实不变 —— 记录本来就该留下；但「后端为准」这条不搞例外。
+        // 刷记录失败**不该**连累「操作已完成」的判定，所以单独 catch 掉。
+        if (refreshLogs) await fetchLogs().catch(() => {});
       } catch {
         throw { code: -1, message: '操作已完成，但列表刷新失败，请刷新页面查看', status: 0 };
       }
@@ -117,9 +140,13 @@ export const useSubscriptionsStore = defineStore('subscriptions', () => {
     return { ok: true };
   }
 
-  /** 取消订阅 → DELETE /api/subscriptions/:id（后端同时停掉该条的比价） */
+  /**
+   * 取消订阅 → DELETE /api/subscriptions/:id
+   * 后端同时停掉该条的比价；它的历史通知流水**保留**（记录是已经发生过的事实，
+   * 删订阅只表示「别再盯了」）。所以写完两样都要重拉：订阅少一条，通知记录一条不少。
+   */
   async function removeSubscription(id) {
-    await writeAndSync(http.delete(`/subscriptions/${id}`));
+    await writeAndSync(http.delete(`/subscriptions/${id}`), { refreshLogs: true });
   }
 
   /**
@@ -129,6 +156,11 @@ export const useSubscriptionsStore = defineStore('subscriptions', () => {
   async function toggleStatus(id) {
     const s = items.value.find((x) => x.id === id);
     if (!s) return;
+    // 过期的没有「暂停 / 恢复」这回事（航班已经飞了）。
+    // 页面不会给这个入口，但 store 是公共出口 —— 不靠 UI 兜底，否则三元会把 expired 推成 'active'。
+    if (s.status === 'expired') {
+      throw { code: 4000, message: '该订阅已过期，不能切换状态', status: 400 };
+    }
     const status = s.status === 'active' ? 'paused' : 'active';
     await writeAndSync(http.patch(`/subscriptions/${id}`, { status }));
   }
@@ -146,6 +178,7 @@ export const useSubscriptionsStore = defineStore('subscriptions', () => {
     logs,
     loading,
     fetchSubscriptions,
+    fetchLogs,
     findDuplicate,
     addSubscription,
     removeSubscription,

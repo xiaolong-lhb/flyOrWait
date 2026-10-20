@@ -141,7 +141,7 @@
         class="chip"
         @click="pickHotRoute(r)"
       >
-        {{ findAirport(r.from)?.city }} → {{ findAirport(r.to)?.city }}
+        {{ findAirport(r.from)?.city ?? r.from }} → {{ findAirport(r.to)?.city ?? r.to }}
       </span>
     </div>
 
@@ -175,12 +175,16 @@ const FLEX_OPTIONS = [
   { value: 'month', label: '整月最优' },
 ];
 
-/** 热门航线（点击仅回填表单，需用户自己点「查询票价」） */
+/**
+ * 热门航线（点击仅回填表单，需用户自己点「查询票价」）
+ * ⚠️ 这里的每个 code 都必须存在于 src/data/airports.js —— 机场表只收国内 + 中国港澳台，
+ *    写表外的 code 不会报错，只会让 chip 上的城市名静默变空白（10-14 删国际机场时踩过）。
+ */
 const HOT_ROUTES = [
-  { from: 'SZX', to: 'TYO' },
-  { from: 'PVG', to: 'SEL' },
-  { from: 'PEK', to: 'BKK' },
-  { from: 'CAN', to: 'SIN' },
+  { from: 'SZX', to: 'PEK' },
+  { from: 'PVG', to: 'CTU' },
+  { from: 'PEK', to: 'LJG' },
+  { from: 'CAN', to: 'TPE' },
 ];
 
 const form = reactive({
@@ -248,25 +252,25 @@ function toQuery() {
 /** 表单校验，通过返回 true */
 function validate() {
   if (!form.from || !form.to) {
-    ElMessage.error('请选择出发地与目的地');
+    ElMessage.warning('请选择出发地与目的地');
     return false;
   }
   if (form.from === form.to) {
-    ElMessage.error('出发地与目的地不能相同');
+    ElMessage.warning('出发地与目的地不能相同');
     return false;
   }
   if (!dateLocked.value && !form.departDate) {
-    ElMessage.error('请选择出发日期');
+    ElMessage.warning('请选择出发日期');
     return false;
   }
   if (isRound.value) {
     if (!form.returnDate) {
-      ElMessage.error('往返行程请选择返回日期');
+      ElMessage.warning('往返行程请选择返回日期');
       return false;
     }
     const base = form.departDate || new Date().toISOString().slice(0, 10);
     if (form.returnDate < base) {
-      ElMessage.error('返回日期不能早于出发日期');
+      ElMessage.warning('返回日期不能早于出发日期');
       return false;
     }
   }

@@ -11,7 +11,7 @@
 --
 --  四张表：
 --    subscriptions  订阅记录（每条 = 一个盯价任务）
---    notify_log     通知流水（每次真的发了降价邮件，追加一条）
+--    notify_log     通知流水（每次真的发了降价邮件，追加一条；**不随订阅删除**，见该表说明）
 --    user_settings  用户配置（默认通知邮箱 / 邮件开关）
 --    query_log      查询日志（用于统计「本月查询次数」）
 --
@@ -43,8 +43,11 @@ create table if not exists public.subscriptions (
   deadline         date        not null,          -- 决策截止日，过了就不再提醒
 
   email            text        not null,
+  -- active  = 正在盯价
+  -- paused  = 用户手动暂停
+  -- expired = 出发日已过，这条监控作废（读列表时由 api/_expire.js 写回，Cron 兜底）
   status           text        not null default 'active'
-                   check (status in ('active', 'paused')),
+                   check (status in ('active', 'paused', 'expired')),
 
   cabin            text,                          -- 舱位，可空
   passengers       smallint    not null default 1,
@@ -65,18 +68,62 @@ create unique index if not exists subscriptions_dedupe_key
 create index if not exists subscriptions_owner_created_idx
   on public.subscriptions (owner_id, created_at desc);
 
--- Cron 每天扫「该比价的」：只扫 active 的。部分索引，比全表索引小得多
+-- Cron 每天扫「该比价的」：只扫 active 的。部分索引，比全表索引小得多。
+-- ⭐ status 多了 'expired' 之后这条索引更有价值：过期的行自动退出索引，
+--    Cron 的扫描成本只跟「还在盯的订阅数」有关，不会随历史积累变慢。
 create index if not exists subscriptions_active_idx
   on public.subscriptions (status, depart_date)
   where status = 'active';
 
 
+-- ── 升级：status 增加 'expired'（老库跑这一段，幂等）──────────────────
+--  为什么不每次查询时按 depart_date < 今天 现算：
+--    ① 状态只有一个定义处。列表页、Cron、将来的导出各算一遍，早晚有人写成 <=、
+--       或者忘了时区 —— 判据边界漂移的坑已经踩过一次；
+--    ② 上面那个部分索引只收 active，标成 expired 的行自动退出索引。
+--  谁来标记（三处，口径完全一致，都按 depart_date < 东八区今天）：
+--    ① 每次读「我的订阅」列表时顺手标 —— api/_expire.js 的 markExpiredRows()，
+--       用户打开页面那一刻看到的就是真状态；没有过期行时一次写都不发；
+--    ② Cron 每天扫一次（待实现）—— 兜住「没人打开页面」的情况；
+--    ③ 下面这条回填 —— 只负责清存量（老库补跑一次即可）。
+--  ⚠️ 三处必须共用同一个「今天」的定义（_expire.js 的 todayShanghai()），
+--     各写一份迟早会差一天。
+--
+--  ⚠️「今天」必须用 Asia/Shanghai，不能用 current_date ——
+--     数据库在 UTC，本地 00:00~08:00 那段时间 UTC 还停在前一天，口径会差一天。
+alter table public.subscriptions
+  drop constraint if exists subscriptions_status_check;
+
+alter table public.subscriptions
+  add constraint subscriptions_status_check
+  check (status in ('active', 'paused', 'expired'));
+
+-- 回填：出发日已过的、还没标 expired 的，一次性标掉。幂等。
+-- ★ 为什么 paused 也一起标：用户暂停的是一条「还会飞」的监控。航班已经飞走了，
+--   这条监控同样作废；留着 paused 会永远挂在列表里显示「已暂停」，比「已过期」更误导。
+update public.subscriptions
+   set status     = 'expired',
+       updated_at = now()
+ where status in ('active', 'paused')
+   and depart_date < (now() at time zone 'Asia/Shanghai')::date;
+
+
 -- ── 表二：通知流水 ────────────────────────────────────────────────────
+--  ★ 通知流水是「已经发生过的事」的记录，不依附订阅而存在。
+--    所以：
+--      · subscription_id 可空，外键用 on delete set null —— 取消订阅**不会**删掉历史记录，
+--        只是把这一行的「来源订阅」置空（那封邮件确实发过了，不能因为取消订阅就当没发生）
+--      · origin / destination 是写入那一刻的**航线快照**。为什么要冗余这一份：
+--        航线本来是 join 订阅表拿的，订阅一删就 join 不到了；而且将来若允许改订阅的航线，
+--        join 出来的历史记录会跟着变，变成「收到的是 A 航线的邮件，记录里写着 B 航线」。
+--        快照 = 事实，写进去就不再动。
 create table if not exists public.notify_log (
   id               uuid        primary key default gen_random_uuid(),
   owner_id         text        not null,
-  subscription_id  uuid        not null
-                   references public.subscriptions (id) on delete cascade,
+  subscription_id  uuid
+                   references public.subscriptions (id) on delete set null,
+  origin           text,                          -- 航线快照（出发三字码），写入时落库
+  destination      text,                          -- 航线快照（到达三字码）
   price            integer     not null,          -- 触发时的价格
   send_status      text        not null default 'sent'
                    check (send_status in ('sent', 'failed')),
@@ -87,10 +134,44 @@ create table if not exists public.notify_log (
 create index if not exists notify_log_owner_time_idx
   on public.notify_log (owner_id, notified_at desc);
 
--- 订阅被删掉时，它的通知流水一起走（已在外键上写 on delete cascade）；
--- 另外从订阅侧查流水时用得上
+-- 从订阅侧查流水时用得上
 create index if not exists notify_log_subscription_idx
   on public.notify_log (subscription_id);
+
+
+-- ── 升级：把已存在的 notify_log 改成「记录不随订阅消失」────────────────
+--  上面的 create table 带 if not exists，对**已经建好的表**不会做任何改动。
+--  所以老库必须靠下面这段补：加两列快照、放开 subscription_id 的 not null、换掉外键。
+--  整段幂等，重复执行无害。
+--
+--  【为什么改外键】原来 on delete cascade —— 取消订阅会把历史通知一起抹掉。
+--  那封邮件是真的发出去过的，删订阅表达的是「别再盯了」，不等于那件事没发生。
+alter table public.notify_log
+  add column if not exists origin      text,
+  add column if not exists destination text;
+
+alter table public.notify_log
+  alter column subscription_id drop not null;
+
+-- 内联写法时 Postgres 自动起的约束名就是 notify_log_subscription_id_fkey
+alter table public.notify_log
+  drop constraint if exists notify_log_subscription_id_fkey;
+
+alter table public.notify_log
+  add constraint notify_log_subscription_id_fkey
+  foreign key (subscription_id) references public.subscriptions (id) on delete set null;
+
+-- 回填：存量的通知记录当初只有 subscription_id，航线靠 join 现取。现在把订阅的航线抄进快照列，
+-- 让老记录也变成自足的一行（否则订阅一删，这些行的航线就查不出来了）。
+-- 只补空值 ⇒ 幂等；已经写好快照的行不动。
+-- ⚠️ 这里抄的是订阅**当前**的航线，不是发信当时的 —— 当时没记，无从还原。
+--    目前订阅的航线不可修改（PATCH 白名单只有阈值/邮箱/截止日/状态），所以两者一致。
+update public.notify_log l
+   set origin      = s.origin,
+       destination = s.destination
+  from public.subscriptions s
+ where l.subscription_id = s.id
+   and (l.origin is null or l.destination is null);
 
 
 -- ── 表三：用户配置 ────────────────────────────────────────────────────

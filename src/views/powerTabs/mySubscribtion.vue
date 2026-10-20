@@ -15,12 +15,10 @@
       <!-- 监控中的航线（含已暂停，靠右上角 badge 区分） -->
       <div class="sec-t">监控中的航线</div>
 
-      <div v-for="s in items" :key="s.id" class="sub">
+      <div v-for="s in items" :key="s.id" class="sub" :class="{ expired: s.status === 'expired' }">
         <div class="top">
           <span class="route">{{ airportLabel(s.from) }} → {{ airportLabel(s.to) }}</span>
-          <span class="badge" :class="s.status === 'active' ? 'on' : 'pause'">
-            {{ s.status === 'active' ? '监控中' : '已暂停' }}
-          </span>
+          <span class="badge" :class="subStatus(s.status).cls">{{ subStatus(s.status).text }}</span>
           <span class="date">
             {{ s.returnDate ? `去 ${s.departDate} · 回 ${s.returnDate}` : s.departDate }}
           </span>
@@ -104,14 +102,20 @@
             <button @click="cancelEdit">取消</button>
           </template>
           <template v-else>
-            <button @click="startEdit(s)">编辑</button>
-            <button @click="toggleStatus(s)">{{ s.status === 'active' ? '暂停' : '恢复' }}</button>
+            <!-- 已过期只剩「取消订阅」：对一个已经飞走的航班，改阈值 / 暂停恢复都没有任何作用，
+                 摆出来就是假按钮。后端也拒绝对过期记录做任何 PATCH（后端才是防线）。 -->
+            <template v-if="s.status !== 'expired'">
+              <button @click="startEdit(s)">编辑</button>
+              <button @click="toggleStatus(s)">
+                {{ s.status === 'active' ? '暂停' : '恢复' }}
+              </button>
+            </template>
             <button class="dan" @click="confirmRemove(s)">取消订阅</button>
           </template>
         </div>
       </div>
 
-      <!-- 通知记录 →【API】Supabase notify_log 表；正文文案由 AI 生成 -->
+      <!-- 通知记录：GET /api/notifications —— 数据在 notify_log 表，航线取自写入时落库的快照（不依附订阅） -->
       <div class="sec-t">通知记录</div>
       <table v-if="logs.length" class="f">
         <thead>
@@ -124,14 +128,14 @@
         </thead>
         <tbody>
           <tr v-for="l in logs" :key="l.id">
-            <td>{{ l.time }}</td>
+            <td>{{ timeText(l.notifiedAt) }}</td>
             <td>{{ airportLabel(l.from) }} → {{ airportLabel(l.to) }}</td>
             <td class="pr">{{ money(l.price) }}</td>
-            <td>{{ l.status }}</td>
+            <td>{{ logStatusText(l.status) }}</td>
           </tr>
         </tbody>
       </table>
-      <p v-else class="none">定时比价尚未开通，暂无通知记录</p>
+      <p v-else class="none">暂无通知记录</p>
     </template>
 
     <!-- 空状态 -->
@@ -158,18 +162,51 @@ const { items, logs, loading } = storeToRefs(store);
 
 const money = (n) => `¥${Number(n).toLocaleString()}`;
 
+/**
+ * 通知时间：后端给的是 UTC 的 ISO 串，这里按**浏览器本地时区**显示。
+ * 为什么不后端格式化好：本机是东八区、Vercel 是 UTC，服务端拼出来总有一边是错的
+ * —— 与「本月查询次数」那次时区 bug 同源（见 api/_queryLog.js 的 monthRange）。
+ */
+function timeText(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '—';
+  const p = (n) => String(n).padStart(2, '0');
+  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+/** 通知状态：后端只给枚举，翻成人话是页面的事（与订阅的 active/paused 同一套做法） */
+const LOG_STATUS_TEXT = { sent: '已通知', failed: '通知失败' };
+const logStatusText = (s) => LOG_STATUS_TEXT[s] ?? '—';
+
+/**
+ * 订阅状态 → 中文 + badge 样式类。**三分支缺一个界面就会说假话**。
+ *   expired：出发日已过，由后端写回库（读列表时标记，Cron 兜底）——
+ *            不是前端按日期推的，口径只留一处。
+ * 映射表而不是三元表达式：将来再加状态只改这里，不动模板。
+ */
+const SUB_STATUS = {
+  active: { text: '监控中', cls: 'on' },
+  paused: { text: '已暂停', cls: 'pause' },
+  expired: { text: '已过期', cls: 'exp' },
+};
+const subStatus = (s) => SUB_STATUS[s] ?? { text: '—', cls: '' };
+
 /* ---------------------------------------------------------------------------
- * 进入页面时，从后端拉一次「我的订阅」
- *   成功 → 覆盖本地列表（后端为准，库里那条会出现在这里）
+ * 进入页面时并行拉两份数据：「我的订阅」+「通知记录」（互不依赖，没必要排队）
+ *   成功 → 覆盖本地（后端为准，库里那条会出现在这里）
  *   失败 → 保留当前显示不动，并弹一次提示
  *          （不静默失败：否则用户会以为眼前这份就是最新数据）
- * 约定：读操作（进页面拉取）成功不弹，只有失败才打断用户
+ * 约定：读操作（进页面拉取）成功不弹，只有失败才打断用户。
+ * 两个请求都挂了只弹**一条** —— 同一次网络故障弹两次，用户会以为是两件事。
  * ------------------------------------------------------------------------ */
 onMounted(async () => {
-  try {
-    await store.fetchSubscriptions();
-  } catch (e) {
-    ElMessage.error(e.message || '订阅列表读取失败');
+  const [subs, logRes] = await Promise.allSettled([store.fetchSubscriptions(), store.fetchLogs()]);
+  if (subs.status === 'rejected') {
+    ElMessage.error(subs.reason?.message || '订阅列表读取失败');
+  } else if (logRes.status === 'rejected') {
+    // 列表出来了、只是记录没读到：说清是哪一块失败，别让用户以为整页坏了
+    ElMessage.warning(logRes.reason?.message || '通知记录读取失败');
   }
 });
 
@@ -361,9 +398,26 @@ function goQuery() {
   color: #b7791f;
   background: #fff6e6;
 }
+.badge.exp {
+  color: #6b7280;
+  background: #f3f4f6;
+}
 .sub .date {
   margin-left: auto;
   font-size: 13px;
+  color: #9ca3af;
+}
+
+/* 已过期：整块降饱和，在列表里「退到后面」。⭐ 别用 opacity —— 那会把文字一起糊掉，
+   而过期卡片上的航线和价格仍然是有意义的历史，要读得清 */
+.sub.expired {
+  background: #fafafa;
+  border-color: #eef0f2;
+}
+.sub.expired .route {
+  color: #6b7280;
+}
+.sub.expired .meta .cell b {
   color: #9ca3af;
 }
 

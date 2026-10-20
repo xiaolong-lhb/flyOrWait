@@ -2,7 +2,15 @@
   <div class="app-shell">
     <!-- 顶部：logo + 功能 tab（始终保留） -->
     <header class="topbar">
-      <div class="logo">
+      <!-- 点 logo 回查询页；键盘也能触达（role/tabindex/enter） -->
+      <div
+        class="logo"
+        role="button"
+        tabindex="0"
+        title="回到查询页"
+        @click="goHome"
+        @keyup.enter="goHome"
+      >
         <span class="plane">✈</span>
         <span class="cn">该买机票吗</span>
         <span class="en">FlyOrWait</span>
@@ -23,9 +31,10 @@
 
 <script setup>
 import { ref, watch } from 'vue';
-import { RouterLink, RouterView, useRoute } from 'vue-router';
+import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router';
 
 const route = useRoute();
+const router = useRouter();
 
 // 功能 tab：常驻在顶部，点击只切换下方内容区
 // match 声明「哪些路由名归这个 tab 管」——查询结果页也属于「查询航班」，所以进结果页时这个 tab 仍高亮
@@ -62,6 +71,14 @@ const isActive = (nav) => nav.match.includes(route.name);
 /** 「查询航班」回到上次停留的位置（结果页也算查询航班）；其他 tab 正常跳 */
 const tabTarget = (nav) =>
   nav === QUERY_TAB && lastQueryPath.value ? lastQueryPath.value : nav.to;
+
+/**
+ * 点 logo 回「查询页」—— 刻意**不复用 tab 的落点记忆**：
+ * logo 是「回主页」的意思，回到上次的结果页反而不符合直觉。
+ */
+function goHome() {
+  router.push({ name: 'discovery' });
+}
 </script>
 
 <style scoped>
@@ -85,6 +102,18 @@ const tabTarget = (nav) =>
   display: flex;
   align-items: baseline;
   gap: 8px;
+  cursor: pointer;
+  user-select: none;
+}
+/* 悬停时只给中文名上个色：够明显，又不至于像按钮 */
+.logo:hover .cn {
+  color: #2f6bff;
+}
+/* 键盘 Tab 过来时要看得见焦点（鼠标点击不会触发它） */
+.logo:focus-visible {
+  outline: 2px solid #2f6bff;
+  outline-offset: 4px;
+  border-radius: 6px;
 }
 .logo .plane {
   color: #2f6bff;
@@ -94,6 +123,7 @@ const tabTarget = (nav) =>
   font-size: 18px;
   font-weight: 800;
   color: #1a2233;
+  transition: color 0.2s;
 }
 .logo .en {
   font-size: 13px;
