@@ -38,10 +38,18 @@ export default function handler(req, res) {
         // 2026 年 Supabase 把 service_role key 改名叫 secret key，
         // 变量名跟着官方走（旧名 SUPABASE_SERVICE_KEY 已弃用）。
         SUPABASE_SECRET_KEY: Boolean(process.env.SUPABASE_SECRET_KEY),
+        // 两个主数据源的 Key：日历靠 Apify、航班列表靠 SerpApi。
+        // 缺一个，查询就会在某一步失败 —— 所以必须在这里能看出来（之前漏了 APIFY_TOKEN）。
+        APIFY_TOKEN: Boolean(process.env.APIFY_TOKEN),
         SERPAPI_KEY: Boolean(process.env.SERPAPI_KEY),
         SKYSCRAPPER_KEY: Boolean(process.env.SKYSCRAPPER_KEY),
         DEEPSEEK_KEY: Boolean(process.env.DEEPSEEK_KEY),
       },
+      // 数据来源：live = 真的打外部 API（花额度）；replay = 读 samples/ 里的录像（不花钱）。
+      // 线上必须是 live —— 一旦这里显示 replay，说明环境变量里误配了 APIFY_REPLAY / SERP_REPLAY，
+      // 而 samples/ 被 .vercelignore 排除了，那种情况下每次查询都会报「找不到样本」。
+      dataMode:
+        process.env.APIFY_REPLAY === '1' || process.env.SERP_REPLAY === '1' ? 'replay' : 'live',
     },
   });
 }
