@@ -18,7 +18,7 @@
       <div v-for="s in items" :key="s.id" class="sub" :class="{ expired: s.status === 'expired' }">
         <div class="top">
           <span class="route">{{ airportLabel(s.from) }} → {{ airportLabel(s.to) }}</span>
-          <span class="badge" :class="subStatus(s.status).cls">{{ subStatus(s.status).text }}</span>
+          <span class="badge" :class="subStatus(s).cls">{{ subStatus(s).text }}</span>
           <span class="date">
             {{ s.returnDate ? `去 ${s.departDate} · 回 ${s.returnDate}` : s.departDate }}
           </span>
@@ -180,17 +180,38 @@ const LOG_STATUS_TEXT = { sent: '已通知', failed: '通知失败' };
 const logStatusText = (s) => LOG_STATUS_TEXT[s] ?? '—';
 
 /**
- * 订阅状态 → 中文 + badge 样式类。**三分支缺一个界面就会说假话**。
- *   expired：出发日已过，由后端写回库（读列表时标记，Cron 兜底）——
- *            不是前端按日期推的，口径只留一处。
- * 映射表而不是三元表达式：将来再加状态只改这里，不动模板。
+ * 订阅状态 → 中文 + badge 样式类。**每种情况说错一句，界面就在撒谎**。
+ *
+ *   active  ：还在盯，一封邮件都没发过
+ *   paused  ：用户手动暂停
+ *   expired ：这条监控**已经结束**了，有两种来路，正常状态字面看不出来：
+ *             ① 发过邮件（命中阈值 / 到了决策截止日）→ 显示「已提醒」
+ *             ② 航班已经飞走、一封都没发过          → 显示「已过期」
+ *
+ * 两者靠 lastNotified（后端 last_notified_at，发信成功才写）区分 —— 这正是
+ * 库里早就有这一列的原因。不需要为「已提醒」再加一个 status 值：
+ * 状态只留一个定义处，显示文案才允许有分支。
+ *
+ * 注意：expired 不能只看出发日推。口径由后端写回数据库（读列表时标记，Cron 兜底），
+ * 前端照库里画 —— 前端自己算日期迟早会和后端算出两个答案。
  */
 const SUB_STATUS = {
   active: { text: '监控中', cls: 'on' },
   paused: { text: '已暂停', cls: 'pause' },
-  expired: { text: '已过期', cls: 'exp' },
 };
-const subStatus = (s) => SUB_STATUS[s] ?? { text: '—', cls: '' };
+
+/**
+ * ⚠️ 入参是**整条订阅**，不是 status 字符串 —— 因为 expired 的文案还要看 lastNotified。
+ *    模板里写 subStatus(s)，不要写成 subStatus(s.status)（那样永远拿不到 lastNotified，
+ *    结果所有已结束的订阅都会被标成「已过期」，连发过信的也一样 —— 这正是 10-21 踩过的坑）。
+ */
+const subStatus = (sub) => {
+  if (sub.status === 'expired') {
+    // 发过信 = 这条监控完成了它的任务；没发过就是航班飞走了，什么都没来得及说
+    return sub.lastNotified ? { text: '已提醒', cls: 'exp' } : { text: '已过期', cls: 'exp' };
+  }
+  return SUB_STATUS[sub.status] ?? { text: '—', cls: '' };
+};
 
 /* ---------------------------------------------------------------------------
  * 进入页面时并行拉两份数据：「我的订阅」+「通知记录」（互不依赖，没必要排队）

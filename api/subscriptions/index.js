@@ -19,6 +19,34 @@ import { getSupabase } from '../_supabase.js';
 import { toClient, toRow } from '../_translate.js';
 import { markExpiredRows, todayShanghai } from '../_expire.js';
 
+/**
+ * 列表展示顺序：还在盯的在前，已结束的沉底。
+ *
+ *   active（监控中）→ paused（已暂停）→ expired（已提醒 / 已过期）
+ *
+ * 同组内保持原有先后：数据库按 created_at 倒序取回，排序用的是
+ * Array.prototype.sort，而它在 ES2019 起规范保证**稳定**（相等元素不换位），
+ * 所以不必再比一次时间，写了反而多一处可能出错的比较。
+ *
+ * ── 为什么在后端排，不交给前端 ──
+ * store 的约定是「位置、顺序、条数全由后端说了算」，前端只负责画。
+ * 前端再排一次，等于把「状态优先级」这条规则抄了两份，改一处就静默不一致。
+ *
+ * ── 为什么不在 SQL 里排 ──
+ * PostgREST 只能按列的值排。按字符排恰好得到 active < expired < paused，
+ * 不是我们要的顺序；要自定义顺序就得加派生列（改表），不值得。
+ * 所以取回后在本进程里排一次，仍然只有一条查询、不多一次往返。
+ *
+ * ⚠️ 将来加分页时必须改成库侧排序（或先按状态分组取），
+ *    否则内存排序只看得到当前这一页，跨页顺序会乱。
+ */
+const STATUS_RANK = { active: 0, paused: 1, expired: 2 };
+
+function sortForDisplay(rows) {
+  // 未知状态排最后，不塞到中间假装认识它
+  return rows.sort((a, b) => (STATUS_RANK[a.status] ?? 9) - (STATUS_RANK[b.status] ?? 9));
+}
+
 export default async function handler(req, res) {
   // 动态接口，显式声明任何一层都别缓存
   res.setHeader('Cache-Control', 'no-store');
@@ -72,6 +100,11 @@ async function listSubscriptions(ownerId, res) {
     res.status(500).json({ code: 5000, message: e.message, data: null });
     return;
   }
+
+  // 展示顺序：还在盯的在前、已结束的沉底（详见文件顶部 STATUS_RANK 的说明）。
+  // 放在过期标记之后 —— 先让 status 变成最终值，再按最终状态排，
+  // 否则刚被标成 expired 的那几条会排错位置。
+  sortForDisplay(data);
 
   // 这行把查到的记录「逐条翻译」后再返回。注意左右两个 data 是两回事，别看混：
   //   右边的 data ← 上面 await 拿到的「行数组」，字段名是数据库那套（origin、base_price…）

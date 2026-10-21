@@ -278,7 +278,12 @@
           <div class="hint">降价时邮件提醒，不填写邮箱则默认按照设置的邮箱发送</div>
         </div>
 
-        <button class="btn" @click="handleSubscribe">订阅监控</button>
+        <!-- 线上写入要跑一趟服务器（POST + 重拉列表），比本地慢，必须让「正在提交」看得见，
+             否则用户会以为按钮没反应而连点 ⇒ 连点会真的发出第二次请求 -->
+        <button class="btn" :disabled="subscribing" @click="handleSubscribe">
+          <span v-if="subscribing" class="btn-spin" aria-hidden="true"></span>
+          {{ subscribing ? '正在开启监控…' : '订阅监控' }}
+        </button>
       </div>
     </template>
   </div>
@@ -589,18 +594,31 @@ function validateSubscribe() {
   return true;
 }
 
+/**
+ * 提交中（只关按钮，不影响整页）。
+ *
+ * 为什么不用 store 的 loading：那个是「列表正在从后端同步」的总开关，
+ * 结果页根本没有列表可转圈；拿它来关按钮会把两件不相干的事绑在一起。
+ *
+ * 它同时承担防连点：按钮 :disabled 是第一道，函数入口再判一次是第二道
+ * （禁用态在某些浏览器里仍可能被回车/双击抢进一次点击事件）。
+ */
+const subscribing = ref(false);
+
 async function handleSubscribe() {
+  if (subscribing.value) return;
   if (!validateSubscribe()) return;
 
   // 出发日：固定日期用用户选的；整月最优时用 Agent 挑出的最优日
   const departDate = params.departDate || data.value.selected.date;
   const flight = pickedFlight.value;
 
-  // 写入后端（POST /api/subscriptions）。字段只说业务语言，数据库列名由后端翻译。
-  // 后端由 Vercel Cron 每天定时调用实时价 API 比价，低于阈值时发邮件；
-  // 【AI】降价邮件正文由 DeepSeek 生成（含紧迫度 + 当前价 vs 阈值对比 + 下一步建议）。
   let res;
+  subscribing.value = true;
   try {
+    // 写入后端（POST /api/subscriptions）。字段只说业务语言，数据库列名由后端翻译。
+    // 后端由 Vercel Cron 每天定时调用实时价 API 比价，低于阈值时发邮件；
+    // 【AI】降价邮件正文由 DeepSeek 生成（含紧迫度 + 当前价 vs 阈值对比 + 下一步建议）。
     res = await subscriptions.addSubscription({
       from: params.from,
       to: params.to,
@@ -628,6 +646,9 @@ async function handleSubscribe() {
     // 断网 / 500 这类真正的失败才弹；成功不弹（约定）
     ElMessage.error(e.message || '订阅失败，请稍后重试');
     return;
+  } finally {
+    // 成功、失败、重复订阅都要把按钮放回去 —— 否则一次失败就永久锁死按钮
+    subscribing.value = false;
   }
 
   if (!res.ok) {
@@ -1090,8 +1111,25 @@ table.f tr.picked .pick {
   cursor: pointer;
   transition: background 0.2s;
 }
-.btn:hover {
+.btn:hover:not(:disabled) {
   background: #1e50d8;
+}
+/* 提交中：颜色压淡 + 禁手，配合按钮上的转圈表达「已经点上了，正在等服务器」 */
+.btn:disabled {
+  background: #9db6ff;
+  cursor: progress;
+}
+/* 按钮内的小转圈：与整页等待态共用同一套 spin 动画，只是尺寸与配色反白 */
+.btn-spin {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  margin-right: 8px;
+  vertical-align: -2px;
+  border: 2px solid rgb(255 255 255 / 45%);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: spin 0.9s linear infinite;
 }
 
 /* ---------- 三态：等待 / 失败 / 提示 ---------- */

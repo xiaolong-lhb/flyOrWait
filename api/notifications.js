@@ -55,7 +55,7 @@ export default async function handler(req, res) {
       // 嵌套写法：`subscriptions (...)` 是「顺着外键把订阅那一行也带出来」。
       // 它现在只作**兜底**（老数据没有快照列时用），新数据靠自己的 origin/destination 快照。
       .select(
-        'id, origin, destination, price, send_status, notified_at, subscriptions ( origin, destination )',
+        'id, origin, destination, price, kind, send_status, notified_at, subscriptions ( origin, destination )',
       )
       .eq('owner_id', ownerId)
       .order('notified_at', { ascending: false })
@@ -85,6 +85,9 @@ function toClient(row) {
     from: row.origin ?? flight.origin ?? '',
     to: row.destination ?? flight.destination ?? '',
     price: row.price,
+    // 两类通知：hit = 到了目标价；deadline = 到了决策截止日。
+    // 页面上要分开说 —— 两者都是「已提醒」，但含义完全不同。
+    kind: row.kind,
     status: row.send_status,
     notifiedAt: row.notified_at,
   };

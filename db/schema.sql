@@ -125,6 +125,11 @@ create table if not exists public.notify_log (
   origin           text,                          -- 航线快照（出发三字码），写入时落库
   destination      text,                          -- 航线快照（到达三字码）
   price            integer     not null,          -- 触发时的价格
+  -- hit      = 跌破目标价，用户等到了
+  -- deadline = 到了决策截止日还没到价，发一封收尾信
+  -- 这张表只有这两类：每张订阅最多各发一封，发完订阅就结束（status→expired）
+  kind             text        not null default 'hit'
+                   check (kind in ('hit', 'deadline')),
   send_status      text        not null default 'sent'
                    check (send_status in ('sent', 'failed')),
   notified_at      timestamptz not null default now()
@@ -172,6 +177,20 @@ update public.notify_log l
   from public.subscriptions s
  where l.subscription_id = s.id
    and (l.origin is null or l.destination is null);
+
+-- 升级：notify_log 增加 kind（区分「命中信」和「到期信」）
+--  老记录全部补成 'hit'（当初只有跌破目标价这一种通知），所以 default 直接给 hit。
+--  为什么不只靠 default：default 只作用于**新写入的行**，已有行还是 null，
+--  而 kind 是 not null 列且 Cron 要按它做幂等判断，null 会让判断失效。
+alter table public.notify_log
+  add column if not exists kind text not null default 'hit';
+
+alter table public.notify_log
+  drop constraint if exists notify_log_kind_check;
+
+alter table public.notify_log
+  add constraint notify_log_kind_check
+  check (kind in ('hit', 'deadline'));
 
 
 -- ── 表三：用户配置 ────────────────────────────────────────────────────

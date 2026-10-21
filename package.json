@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "dev:api": "node --watch-path=api --watch-path=scripts scripts/dev-api.mjs",
+    "dev:api": "node --watch-path=api --watch-path=scripts scripts/dev-api.mjs --replay",
+    "dev:api:live": "node --watch-path=api --watch-path=scripts scripts/dev-api.mjs --live",
     "probe:apify": "node scripts/probe-apify-calendar.mjs",
     "probe:apify:coverage": "node scripts/probe-apify-coverage.mjs",
     "build": "vite build",
@@ -19,6 +20,7 @@
     "@supabase/supabase-js": "^2.117.3",
     "axios": "^1.20.0",
     "element-plus": "^2.14.7",
+    "nodemailer": "^10.1.7",
     "pinia": "^4.0.3",
     "vue": "^3.5.42",
     "vue-router": "^5.3.1"

@@ -35,11 +35,30 @@ try {
   console.log('[env] 没有 .env.local（还没密钥，接口会读到空值）');
 }
 
+// ── 数据源模式：命令行开关优先于 .env.local ──
+// npm run dev:api       → 带 --replay：本地默认回放，不花钱（日常开发都是这个）
+// npm run dev:api:live  → 带 --live  ：真的打外部接口（验价格/验邮件时才用）
+//
+// 为什么不把「默认回放」写进 api/ 里的代码：api/ 是要上线的代码，一旦线上判断出错
+// 就会去读 samples/，而 samples/ 被 .vercelignore 排除 ⇒ 线上每次查询都报「找不到样本」。
+// 所以这个默认值只活在**本地运行器**里，Vercel 根本看不到这个文件。
+//
+// 赋值放在读 .env.local 之后，命令行开关才能覆盖文件里的值（顺序反了会被文件盖回去）。
+const argv = process.argv.slice(2);
+const forceReplay = argv.includes('--replay');
+const forceLive = argv.includes('--live');
+if (forceReplay || forceLive) {
+  for (const key of ['APIFY_REPLAY', 'SERP_REPLAY']) {
+    if (forceReplay) process.env[key] = '1';
+    else delete process.env[key];
+  }
+  console.log(`[mode] 命令行开关：${forceReplay ? '--replay' : '--live'}（覆盖 .env.local）`);
+}
+
 // ── 启动时报出「两个数据源各走哪条路」──
 // 为什么值得专门打一行：回放/真机**只在启动时读一次环境变量**，一旦启动就改不了，
 // 而两者的代价差 150 倍（回放 0 元、真机约 $0.018/次）。看不见模式就分不清
 // 「这次测试花钱了没有」，也分不清「结果页是录像还是实时价」。
-// 开关从两处来：.env.local（持久，适合长期只跑回放）或命令行前缀（临时，适合插一次真机）。
 const replayOf = (v) => (v === '1' ? '回放（读 samples/，不花钱）' : '真机（走网络，花钱）');
 console.log(`[mode] 价格日历：${replayOf(process.env.APIFY_REPLAY)}`);
 console.log(`[mode] 航班列表：${replayOf(process.env.SERP_REPLAY)}`);

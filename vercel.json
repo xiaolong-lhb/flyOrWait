@@ -7,5 +7,6 @@
     "api/*.js": { "maxDuration": 60 },
     "api/**/*.js": { "maxDuration": 60 }
   },
-  "rewrites": [{ "source": "/(.*)", "destination": "/index.html" }]
+  "rewrites": [{ "source": "/(.*)", "destination": "/index.html" }],
+  "crons": [{ "path": "/api/cron/check-prices", "schedule": "0 1 * * *" }]
 }

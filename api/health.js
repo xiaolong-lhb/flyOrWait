@@ -44,6 +44,15 @@ export default function handler(req, res) {
         SERPAPI_KEY: Boolean(process.env.SERPAPI_KEY),
         SKYSCRAPPER_KEY: Boolean(process.env.SKYSCRAPPER_KEY),
         DEEPSEEK_KEY: Boolean(process.env.DEEPSEEK_KEY),
+        // 邮件通道（QQ 邮箱 SMTP）：只报「配没配」，绝不回显值。
+        // 注意 MAIL_PASS 是 16 位授权码，不是 QQ 登录密码（填错会 EAUTH）。
+        MAIL_USER: Boolean(process.env.MAIL_USER),
+        // 只报 USER 不够：缺 PASS 时 smtp 会当场 EAUTH，而在别的报错里看不出来是「没配」。
+        MAIL_PASS: Boolean(process.env.MAIL_PASS),
+        // Cron 的钥匙：/api/cron/check-prices 会验 `Authorization: Bearer $CRON_SECRET`。
+        // 没配的话那个接口会**拒绝执行**（不放行），所以这里必须是 true，
+        // 否则每天定时触发都只换来一个 500，而且没人会注意到。
+        CRON_SECRET: Boolean(process.env.CRON_SECRET),
       },
       // 数据来源：live = 真的打外部 API（花额度）；replay = 读 samples/ 里的录像（不花钱）。
       // 线上必须是 live —— 一旦这里显示 replay，说明环境变量里误配了 APIFY_REPLAY / SERP_REPLAY，
