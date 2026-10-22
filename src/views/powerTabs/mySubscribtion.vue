@@ -114,10 +114,28 @@
           </template>
         </div>
       </div>
+    </template>
 
-      <!-- 通知记录：GET /api/notifications —— 数据在 notify_log 表，航线取自写入时落库的快照（不依附订阅） -->
+    <!-- 空状态 -->
+    <div v-else class="blank">
+      <div class="ico">✈</div>
+      <p class="blank-t">还没有监控的航线</p>
+      <p class="blank-s">去查询页找一条航线，在结果页点「订阅监控」就能开始盯价</p>
+      <button class="btn" @click="goQuery">去查询页</button>
+    </div>
+
+    <!--
+      通知记录：GET /api/notifications —— 数据在 notify_log 表，航线取自写入时落库的快照。
+      ⚠️ 必须放在 items 的判断**之外**：记录是「已经发生过的事实」，外键是 on delete set null，
+         订阅删光之后这些行依然存在。挂在 v-if="items.length" 里会被空态一起吞掉
+         （2026-10-22 实测：订阅清空后页面只剩空态，库里 2 条记录完全看不见）。
+      三种组合：有记录 → 标题 + 表格（不管订阅有没有）；
+               没记录但有订阅 → 提示「暂无通知记录」；
+               两边都空 → 只留上面的航线空态，不再叠一句多余的空提示。
+    -->
+    <template v-if="logs.length">
       <div class="sec-t">通知记录</div>
-      <table v-if="logs.length" class="f">
+      <table class="f">
         <thead>
           <tr>
             <th>时间</th>
@@ -135,16 +153,8 @@
           </tr>
         </tbody>
       </table>
-      <p v-else class="none">暂无通知记录</p>
     </template>
-
-    <!-- 空状态 -->
-    <div v-else class="blank">
-      <div class="ico">✈</div>
-      <p class="blank-t">还没有监控的航线</p>
-      <p class="blank-s">去查询页找一条航线，在结果页点「订阅监控」就能开始盯价</p>
-      <button class="btn" @click="goQuery">去查询页</button>
-    </div>
+    <p v-else-if="items.length" class="none">暂无通知记录</p>
   </div>
 </template>
 
