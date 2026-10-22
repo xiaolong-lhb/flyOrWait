@@ -3,6 +3,16 @@
  *
  *   GET   列出「我的订阅」—— 按 owner 过滤，最新的排前面
  *   POST  新建一条订阅 —— 同一航线 + 同一出发日 + 同一邮箱已存在时，返回 409 / 4090
+ *   DELETE ?id=<uuid>   取消订阅（删掉这条；历史通知流水保留，外键 on delete set null）
+ *   PATCH  ?id=<uuid>   改配置：提醒阈值 / 通知邮箱 / 决策截止日，以及 暂停/恢复
+ *
+ * ⚠️ 单条操作为什么用 `?id=` 而不用 `/api/subscriptions/:id`：
+ *   原来单条操作挂在同目录的 `[id].js` 上。2026-10-22 线上实测那条路由**根本没生成**——
+ *   GET 被 SPA 兜底 rewrite 到首页、DELETE 得到 405（响应头是 index.html 的静态头）。
+ *   按 Vercel 的路由顺序（File System Routes 先于 Rewrites），落到 rewrite 就说明
+ *   文件系统里没有这条路由；社区案例的结论是方括号被当成**字面量**路径，真实 uuid 匹配不上。
+ *   详见 api/_subscriptionOps.js 顶部。改成 query 传 id 后，走的是这条已验证可用的路由；
+ *   Vercel 官方文档也建议「相关路由放进同一个函数，别为每个接口拆一个函数」。
  *
  * ── 身份从哪来 ──
  * 请求头 X-Owner-Id，由前端拦截器自动带上（见 src/api/index.js），
@@ -10,7 +20,7 @@
  *
  * ── 字段翻译（toClient / toRow）──
  * 数据库列名与前端 store 字段名刻意不一致（from 是 SQL 保留字，列名只能叫 origin…）。
- * 翻译统一放在 api/_translate.js，本文件与同目录的 [id].js 共用同一份，
+ * 翻译统一放在 api/_translate.js，本文件与 api/_subscriptionOps.js 共用同一份，
  * 保证「进」「出」两边的形状永远对得上。
  *
  * 响应体遵循全局约定 { code, message, data }，完整规则见 src/api/index.js 顶部。
@@ -18,6 +28,7 @@
 import { getSupabase } from '../_supabase.js';
 import { toClient, toRow } from '../_translate.js';
 import { markExpiredRows, todayShanghai } from '../_expire.js';
+import { UUID_RE, removeSubscription, updateSubscription } from '../_subscriptionOps.js';
 
 /**
  * 列表展示顺序：还在盯的在前，已结束的沉底。
@@ -56,6 +67,35 @@ export default async function handler(req, res) {
     const ownerId = req.headers['x-owner-id'];
     if (!ownerId) {
       res.status(400).json({ code: 4000, message: '缺少身份标识（X-Owner-Id）', data: null });
+      return;
+    }
+
+    // ── 单条操作：?id=<uuid>（取消 / 修改，逻辑在 api/_subscriptionOps.js）──
+    // 用 Object.hasOwn 判「参数在不在」，不用真值判断：`?id=` 这种空值也该明确报
+    // 「无效的订阅 ID」，而不是静默掉到 GET 列表去 —— 那会让调用方以为参数被忽略了。
+    if (Object.hasOwn(req.query ?? {}, 'id')) {
+      const id = String(req.query.id ?? '');
+      if (!UUID_RE.test(id)) {
+        res.status(400).json({ code: 4000, message: '无效的订阅 ID', data: null });
+        return;
+      }
+
+      if (req.method === 'DELETE') {
+        await removeSubscription(ownerId, id, res);
+        return;
+      }
+
+      if (req.method === 'PATCH') {
+        await updateSubscription(ownerId, id, req, res);
+        return;
+      }
+
+      // 带 id 却没有对应动词：说清楚这里支持什么，别让人误以为是集合接口
+      res.status(405).json({
+        code: 4050,
+        message: `带 id 时只支持 DELETE / PATCH，收到：${req.method}`,
+        data: null,
+      });
       return;
     }
 

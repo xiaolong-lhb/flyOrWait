@@ -1,74 +1,44 @@
 /**
- * 单条订阅   /api/subscriptions/:id
+ * 单条订阅的操作：取消（DELETE）与修改（PATCH）
  *
- *   DELETE  取消订阅（删掉这条；它的历史通知流水**保留**，外键 on delete set null 只把来源置空）
- *   PATCH   改配置：提醒阈值 / 通知邮箱 / 决策截止日（「我的订阅」编辑态点保存走这里）
- *           以及 暂停 / 恢复（status 在 active ↔ paused 之间切）
- *           ⚠️ 已过期（expired）的订阅一律拒绝修改 —— 包括想把它改回 active。
- *              expired 是系统按出发日判定的事实：读列表时由 api/_expire.js 写回库，
- *              Cron 上线后由它兜底。不接受调用方写入或撤销。
+ * ── 为什么单独一个零件 ──
+ * 这两件事原本挂在 `api/subscriptions/[id].js` 上（URL 形如 /api/subscriptions/:id）。
+ * 2026-10-22 线上实测：那个文件在部署里，但 Vercel **没给它生成动态路由**——
+ * 请求 `/api/subscriptions/<uuid>` 被 `vercel.json` 的 SPA 兜底 `/(.*) → /index.html`
+ * 吃掉了（GET 被重定向到首页，DELETE 得到 405 "Method Not Allowed"，响应头还带着
+ * `Content-Disposition: inline; filename="index.html"`，是静态文件层的，不是我们的 JSON）。
+ * 依据 Vercel 官方路由顺序：**File System Routes 先于 Rewrites** ⇒ 请求既然落到 rewrite，
+ * 就说明文件系统里压根没有这条路由，不是方法没写。
+ * 社区里同类案例的结论是「路径不合规时，方括号会被当成**字面量**路径」，
+ * 也就是真实 uuid 永远匹配不上 /api/subscriptions/[id]。
  *
- * ── 身份 ──
- * 请求头 X-Owner-Id（前端拦截器自动带，见 src/api/index.js），对应数据库 owner_id。
- * ★ 每次读写都带 owner_id 一起过滤 —— 光凭 id 就能改/删的话，
- *    「猜到别人的 id」等于能改别人的订阅。
+ * 所以改走「同一个函数 + query 传 id」：
+ *   DELETE /api/subscriptions?id=<uuid>
+ *   PATCH  /api/subscriptions?id=<uuid>
+ * 两条都落在 `api/subscriptions/index.js` 里（那个路由线上已验证可用）。
+ * 这也不是权宜之计——Vercel 文档明确建议「不要把每个接口拆成单独的函数，
+ * 把相关路由放进同一个函数里」。
  *
- * ── 为什么 PATCH 不用 _translate.js 的 toRow ──
- * 这里能改的四个字段（threshold / email / deadline / status）在数据库里恰好同名，
- * 不需要翻译；而且它们天然构成一份「白名单」—— 只放行这几个键，
- * 免得有人顺手把 owner_id、created_at 也塞进来改了。
+ * ⚠️ 本文件以 `_` 开头 = 不是路由，只被 import。
  *
  * 响应体遵循全局约定 { code, message, data }（完整规则见 src/api/index.js 顶部）：
  *   200 + code 0      成功，data = 改动后的那一行（形状与列表接口完全一致）
  *   400 + code 4000   参数错：id 不是合法 uuid / 没有可改字段 / 字段值非法
  *   404 + code 4040   该订阅不存在（或不属于你）
- *   405 + code 4050   方法不支持
  *   500 + code 5000   服务端异常（连不上库、少环境变量…）
  */
-import { getSupabase } from '../_supabase.js';
-import { toClient } from '../_translate.js';
+import { getSupabase } from './_supabase.js';
+import { toClient } from './_translate.js';
 
 /**
  * id 必须是 uuid —— 数据库主键就是 uuid。
  * 不先拦的话，一个胡乱拼的 id 会让 PostgREST 抛 PG 错误 22P02（invalid input syntax for uuid），
  * 被我们兜成 500 —— 明明是「调用方传错了」，却报成「服务器坏了」，不准确。
  */
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+export const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** PATCH 允许改的字段（白名单）。其余键一律丢弃，不进数据库 */
-const PATCHABLE = ['threshold', 'email', 'deadline', 'status'];
-
-export default async function handler(req, res) {
-  res.setHeader('Cache-Control', 'no-store');
-
-  try {
-    const ownerId = req.headers['x-owner-id'];
-    if (!ownerId) {
-      res.status(400).json({ code: 4000, message: '缺少身份标识（X-Owner-Id）', data: null });
-      return;
-    }
-
-    const id = String(req.query.id ?? '');
-    if (!UUID_RE.test(id)) {
-      res.status(400).json({ code: 4000, message: '无效的订阅 ID', data: null });
-      return;
-    }
-
-    if (req.method === 'DELETE') {
-      await removeSubscription(ownerId, id, res);
-      return;
-    }
-
-    if (req.method === 'PATCH') {
-      await updateSubscription(ownerId, id, req, res);
-      return;
-    }
-
-    res.status(405).json({ code: 4050, message: `不支持的方法：${req.method}`, data: null });
-  } catch (e) {
-    res.status(500).json({ code: 5000, message: e.message, data: null });
-  }
-}
+export const PATCHABLE = ['threshold', 'email', 'deadline', 'status'];
 
 /**
  * 取消订阅
@@ -78,7 +48,7 @@ export default async function handler(req, res) {
  *   不加 select 就没法区分，会把「这条根本不存在」也报成 200，
  *   前端于是以为删掉了，其实什么都没发生。
  */
-async function removeSubscription(ownerId, id, res) {
+export async function removeSubscription(ownerId, id, res) {
   const { data, error } = await getSupabase()
     .from('subscriptions')
     .delete()
@@ -135,7 +105,7 @@ function patchError(patch) {
 }
 
 /** 改配置 / 暂停恢复 */
-async function updateSubscription(ownerId, id, req, res) {
+export async function updateSubscription(ownerId, id, req, res) {
   const patch = pickPatch(req.body ?? {});
 
   if (!Object.keys(patch).length) {

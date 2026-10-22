@@ -141,16 +141,27 @@ export const useSubscriptionsStore = defineStore('subscriptions', () => {
   }
 
   /**
-   * 取消订阅 → DELETE /api/subscriptions/:id
+   * 单条订阅的 URL：`/subscriptions?id=<uuid>`
+   *
+   * ⚠️ 不是 `/subscriptions/:id`。原来单条操作走后端 `api/subscriptions/[id].js`，
+   *    但线上实测那条动态路由**没被 Vercel 生成**（请求被 SPA 兜底 rewrite 吃掉，
+   *    DELETE 直接 405）。改成 query 传 id，走的是已验证可用的 `subscriptions` 路由。
+   *    完整复盘见 api/_subscriptionOps.js 顶部。
+   *    集中在这一处拼，三个调用点不会各自走样。
+   */
+  const oneUrl = (id) => `/subscriptions?id=${encodeURIComponent(id)}`;
+
+  /**
+   * 取消订阅 → DELETE /api/subscriptions?id=<uuid>
    * 后端同时停掉该条的比价；它的历史通知流水**保留**（记录是已经发生过的事实，
    * 删订阅只表示「别再盯了」）。所以写完两样都要重拉：订阅少一条，通知记录一条不少。
    */
   async function removeSubscription(id) {
-    await writeAndSync(http.delete(`/subscriptions/${id}`), { refreshLogs: true });
+    await writeAndSync(http.delete(oneUrl(id)), { refreshLogs: true });
   }
 
   /**
-   * 暂停 / 恢复 → PATCH /api/subscriptions/:id { status }
+   * 暂停 / 恢复 → PATCH /api/subscriptions?id=<uuid> { status }
    * 目标值由当前状态推出来（active ↔ paused），不由调用方传 —— 调用方只需给 id。
    */
   async function toggleStatus(id) {
@@ -162,15 +173,15 @@ export const useSubscriptionsStore = defineStore('subscriptions', () => {
       throw { code: 4000, message: '该订阅已过期，不能切换状态', status: 400 };
     }
     const status = s.status === 'active' ? 'paused' : 'active';
-    await writeAndSync(http.patch(`/subscriptions/${id}`, { status }));
+    await writeAndSync(http.patch(oneUrl(id), { status }));
   }
 
   /**
-   * 改订阅配置 → PATCH /api/subscriptions/:id { threshold, email, deadline }
+   * 改订阅配置 → PATCH /api/subscriptions?id=<uuid> { threshold, email, deadline }
    * @param {object} patch 只放要改的字段；后端用白名单过滤，其余键一律丢弃
    */
   async function updateSubscription(id, patch) {
-    await writeAndSync(http.patch(`/subscriptions/${id}`, patch));
+    await writeAndSync(http.patch(oneUrl(id), patch));
   }
 
   return {
