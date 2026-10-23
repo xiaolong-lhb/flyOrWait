@@ -48,6 +48,7 @@
 
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { todayShanghai } from './_expire.js';
 
 const ACTOR = 'lergassy~flight-price-calendar';
 const API = 'https://api.apify.com/v2';
@@ -80,12 +81,16 @@ function apiToken() {
   return token;
 }
 
-/** 本地时区的今天，YYYY-MM-DD —— 作为日历窗口的起点 */
+/**
+ * 日历窗口的起点 = **东八区的今天**，YYYY-MM-DD。
+ *
+ * ★ 不能跟随运行环境：Vercel 的 Node 跑在 UTC，北京 00:00~08:00 会算成「昨天」，
+ *   于是窗口整体前移一天、判据样本里还混进一个已经过去的日子。
+ *   `todayShanghai()` 是全项目唯一的「今天」（见 api/_expire.js），这里只做转发，
+ *   别再另写一份 —— 「两处时区口径不一致」这个坑已经踩过。
+ */
 function localToday() {
-  const d = new Date();
-  const mm = String(d.getMonth() + 1).padStart(2, '0');
-  const dd = String(d.getDate()).padStart(2, '0');
-  return `${d.getFullYear()}-${mm}-${dd}`;
+  return todayShanghai();
 }
 
 /**

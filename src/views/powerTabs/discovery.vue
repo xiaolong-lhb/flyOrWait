@@ -3,7 +3,13 @@
     <!-- 引导文案 -->
     <div class="hero">
       <h1 class="slogan">现在买，还是再等等？</h1>
-      <p class="sub">输入航线，AI 帮你判断票价还会不会降</p>
+      <!--
+        ⚠️ 原文案是「AI 帮你判断票价还会不会降」，但判断实际是后端按 P25/P75 分位算的
+           （api/_judge.js），一行 LLM 都没有 —— 承诺比实现大，属于编造。
+           这里刻意不写「AI」，也不写「统计模型」这种术语：等 Agent 层真接上再改回来，
+           「帮你判断」这句话在任何一种实现下都成立。
+      -->
+      <p class="sub">输入航线，帮你判断票价还会不会降</p>
     </div>
 
     <!-- 查询卡片 -->
@@ -62,7 +68,8 @@
         <div class="field" :class="{ full: !isRound }">
           <label>
             出发日期
-            <span v-if="dateLocked" class="mut">（整月最优 · 由 AI 决定）</span>
+            <!-- 「AI 决定」是假的：这是后端在窗口里取最低价那天（api/result.js 的 targetDate） -->
+            <span v-if="dateLocked" class="mut">（整月最优 · 自动挑最便宜那天）</span>
           </label>
           <el-date-picker
             v-model="form.departDate"
@@ -110,7 +117,7 @@
 
         <!-- 日期灵活度 -->
         <div class="field full">
-          <label>日期灵活度（让 AI 帮你挑最优出发日）</label>
+          <label>日期灵活度（自动挑最优出发日）</label>
           <div class="flex-row">
             <span
               v-for="f in flexOptions"
@@ -194,7 +201,7 @@ const dateLocked = computed(() => form.flexibility === 'month');
 
 /**
  * 日期灵活度：往返时锁死为「固定日期」（见下方 pickFlex 说明）
- * 「单程」那一侧才有「让 AI 挑最优日」的空间
+ * 「单程」那一侧才有「自动挑最优日」的空间
  */
 const flexOptions = computed(() =>
   FLEX_OPTIONS.map((f) => ({ ...f, disabled: isRound.value && f.value !== 'fixed' })),

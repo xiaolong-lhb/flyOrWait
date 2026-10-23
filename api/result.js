@@ -31,6 +31,7 @@ import { getPriceCalendar } from './_apify.js';
 import { searchFlights } from './_serp.js';
 import { buildCalendarSection, composeResult } from './_compose.js';
 import { logQuery } from './_queryLog.js';
+import { todayShanghai } from './_expire.js';
 
 const CODE_RE = /^[A-Z]{3}$/;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -47,12 +48,25 @@ const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const SUPPORTED_CABINS = ['economy'];
 const FLEX = ['fixed', 'plus3', 'plus7', 'month'];
 
-/** 服务器本地「今天」：一个给日期比较用，一个给页面展示快照时间用 */
+/**
+ * 服务器时区的「今天」与「现在几点」。
+ *
+ * ★ 必须是**东八区**，不能跟随运行环境：
+ *   Vercel 的 Node 跑在 UTC，`new Date().getFullYear()` 在北京时间 00:00~08:00
+ *   会算出**前一天** —— 抓取时间显示错日期、「出发日不能早于今天」还会放行昨天。
+ *   同一类坑在 api/_expire.js 顶部写过一遍，那里的 todayShanghai() 是全项目唯一来源，
+ *   这里直接复用它，别再另写一份。
+ */
 function localNow() {
-  const d = new Date();
-  const p = (n) => String(n).padStart(2, '0');
-  const iso = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
-  return { iso, stamp: `${iso} ${p(d.getHours())}:${p(d.getMinutes())}` };
+  const iso = todayShanghai();
+  // 只要「HH:mm」：日期已经由 iso 提供，两者同源，不会出现「日期是今天、时间是昨天」的撕裂
+  const hm = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Asia/Shanghai',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).format(new Date());
+  return { iso, stamp: `${iso} ${hm}` };
 }
 
 /** 外部源失败 → 502；我们自己的配置缺失 → 500（分开，别让运维看不出是谁的锅） */

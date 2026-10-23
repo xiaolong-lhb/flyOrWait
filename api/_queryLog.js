@@ -19,34 +19,31 @@
  */
 
 import { getSupabase } from './_supabase.js';
+import { todayShanghai } from './_expire.js';
 
 /**
  * 当前月的起止。
  *
- * ★ 这里有个必须说清的时区问题（已实测踩到）：
- *   `queried_at` 是 timestamptz，存的是 **UTC 绝对时刻**；而用户说的「本月」是**本地月份**。
- *   本地本月 1 号 00:00（东八区）转成 UTC 其实是 **上个月最后一天 16:00**。
- *   如果直接拿 UTC 的月份去切，会有两处错：
- *     ① 标签错：`from.toISOString().slice(0,7)` 在东八区取出来是**上个月**（实测 10-16 返回 "2026-09"）；
- *     ② 边界错：本地 11-01 08:00 之前查的，UTC 还停在 10-31 ⇒ 会被算进上个月。
- *   ⇒ 做法：**用本地时间构造边界，再 toISOString 成 UTC 去比**（比较的是同一根时间轴，正确），
- *      而**给人看的月份标签单独用本地字段拼**，不从 UTC 串里切。
+ * ★ 时区：「本月」指的是**用户的月**（东八区），不是运行环境的月。
+ *   `queried_at` 是 timestamptz（UTC 绝对时刻），而 Vercel 的 Node 跑在 UTC：
+ *   北京时间每月 1 号 00:00~08:00，UTC 还停在上个月最后一天 ⇒
+ *   跟着 `getFullYear()` 走会把「本月」算成上个月，标签和边界一起错。
+ *
+ *   所以先取东八区的年月（`todayShanghai()` 是全项目唯一「今天」来源），
+ *   再把「东八区某月 1 号 00:00」换算成绝对时刻。
+ *   中国不实行夏令时、常年 UTC+8 ⇒ 固定减 8 小时就是准确的，不需要引入时区库。
  *
  * @returns {{from: string, to: string, label: string}}
  *   from / to —— ISO(UTC)，左闭右开，给数据库比较用
- *   label     —— 'YYYY-MM'，本地月份，给页面展示用
+ *   label     —— 'YYYY-MM'，东八区月份，给页面展示用
  */
 export function monthRange() {
-  const now = new Date();
-  const y = now.getFullYear();
-  const m = now.getMonth(); // 0-based
-  // new Date(y, m, 1) 就是**本地**该月 1 号 00:00；toISOString 只是换个表示法，绝对时刻不变
-  const from = new Date(y, m, 1);
-  const to = new Date(y, m + 1, 1);
+  const [y, m] = todayShanghai().split('-').map(Number); // m 是 1-based
+  const SHANGHAI_OFFSET_MS = 8 * 60 * 60 * 1000;
   return {
-    from: from.toISOString(),
-    to: to.toISOString(),
-    label: `${y}-${String(m + 1).padStart(2, '0')}`,
+    from: new Date(Date.UTC(y, m - 1, 1) - SHANGHAI_OFFSET_MS).toISOString(),
+    to: new Date(Date.UTC(y, m, 1) - SHANGHAI_OFFSET_MS).toISOString(),
+    label: `${y}-${String(m).padStart(2, '0')}`,
   };
 }
 
