@@ -54,6 +54,11 @@ create table if not exists public.subscriptions (
 
   created_at       timestamptz not null default now(),
   updated_at       timestamptz not null default now(),
+  -- 上次成功比价的时间（Cron 写完 current_price 就顺手写它），没比过价为 null。
+  -- ★ 刻意不复用 updated_at：那一列被用户「改阈值 / 改邮箱」时也会写，
+  --   拿它当「这个价格是几点抓的」，会在用户编辑一次之后变成谎报 ——
+  --   价格明明还是上次 Cron 抓的，时间却跳到了刚才。
+  last_checked_at  timestamptz,
   last_notified_at timestamptz                    -- 上次成功发信的时间，没发过为 null
 );
 
@@ -191,6 +196,13 @@ alter table public.notify_log
 alter table public.notify_log
   add constraint notify_log_kind_check
   check (kind in ('hit', 'deadline'));
+
+
+-- 升级：subscriptions 增加 last_checked_at（「上次比价时间」，老库跑这一段，幂等）
+--  allow null 是必须的：老数据没有任何「比价时间」可补，硬填 now() 就是编造。
+--  前端遇到 null 会退回显示「订阅时的价格」，不会把 current_price 说成新抓的。
+alter table public.subscriptions
+  add column if not exists last_checked_at timestamptz;
 
 
 -- ── 表三：用户配置 ────────────────────────────────────────────────────

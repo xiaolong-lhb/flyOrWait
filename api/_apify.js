@@ -145,6 +145,13 @@ async function runActor({ origin, destination, currency, days }) {
     // 只要日历，不要航班列表 —— 列表那一半走 SerpApi（另一条链路）
     calendarOnly: true,
     adults: 1,
+    // ★ 固定经济舱（2026-10-23 决定，见 api/result.js 的 SUPPORTED_CABINS）
+    //   actor 其实支持 cabinClass，枚举是 economy / premium_economy / business / first
+    //   （**下划线**，不是空格 —— 这点容易记错）。没开放的原因不是不支持，
+    //   而是「商务舱日历能不能凑够 api/_judge.js 的 14 天样本」没实测过：
+    //   样本不够时判据会直接返回 available:false，等于卖了商务舱却回答不了「该不该买」。
+    //   ⇒ 要做的话：这里改成入参 + api/result.js 放开 SUPPORTED_CABINS + 前端加回选项，
+    //     三处一起改，并真跑一次看 dayCount 是否 ≥ 14。
     cabinClass: 'economy',
     currency, // ← 坑 ①：必须显式 CNY，默认是 USD
     market: 'CN', // ← 坑 ①：默认空，销售地不明会导致票价口径漂

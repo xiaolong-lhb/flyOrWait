@@ -34,7 +34,17 @@ import { logQuery } from './_queryLog.js';
 
 const CODE_RE = /^[A-Z]{3}$/;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
-const CABINS = ['economy', 'premium', 'business', 'first'];
+/**
+ * 当前**唯一支持**的舱位（2026-10-23 决定砍掉商务 / 头等）。
+ *
+ * 为什么砍：Apify 日历的 `cabinClass` 在 api/_apify.js 里是硬编码 economy，
+ * 而判据（P25/P75 分位）也是按经济舱那一串价格算的。actor 本身**支持**舱位
+ * （枚举是 economy / premium_economy / business / first，注意是下划线），
+ * 但「商务舱日历能不能凑够 14 天样本」没实测过 —— 判据的地基就是样本数。
+ * 与其提供一个可能算错的选项，不如只做经济舱。
+ * 将来要做：改这里 + api/_apify.js + 前端表单，三处一起动。
+ */
+const SUPPORTED_CABINS = ['economy'];
 const FLEX = ['fixed', 'plus3', 'plus7', 'month'];
 
 /** 服务器本地「今天」：一个给日期比较用，一个给页面展示快照时间用 */
@@ -112,8 +122,15 @@ export default async function handler(req, res) {
       return;
     }
   }
-  if (!CABINS.includes(cabin)) {
-    res.status(400).json({ code: 4000, message: `cabin 只能是 ${CABINS.join(' / ')}`, data: null });
+  // ★ 明确拒绝，不「忽略掉按经济舱算」。
+  //   静默降级是最坏的：调用方（现在是页面，将来是 Agent）会以为拿到的是商务舱数据，
+  //   实际日历和判据全是经济舱口径，而两边都没有线索能发现这件事。
+  if (!SUPPORTED_CABINS.includes(cabin)) {
+    res.status(400).json({
+      code: 4000,
+      message: `当前仅支持经济舱（cabin=economy）—— 日历与判据都按经济舱口径计算，不做静默降级`,
+      data: null,
+    });
     return;
   }
   if (!Number.isInteger(passengers) || passengers < 1 || passengers > 9) {

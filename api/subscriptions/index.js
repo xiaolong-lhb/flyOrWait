@@ -192,6 +192,18 @@ async function createSubscription(ownerId, req, res) {
     return;
   }
 
+  // ★ 舱位同理（2026-10-23 砍掉非经济舱）：
+  //   日历源只比经济舱价，Cron 对非经济舱的订阅是「本轮跳过」——
+  //   也就是说这种订阅**永远不会发信**，而页面写着「每天 9:00 自动比价」。
+  //   与其造一条永远沉默的订阅，不如在入口就拒掉（前端已经不再提供这个选项）。
+  const cabin = payload.cabin ?? 'economy';
+  if (cabin !== 'economy') {
+    res
+      .status(400)
+      .json({ code: 4000, message: '当前仅支持经济舱订阅（cabin=economy）', data: null });
+    return;
+  }
+
   const { data, error } = await getSupabase()
     .from('subscriptions')
     .insert(toRow(payload, ownerId))

@@ -33,6 +33,9 @@ export function toClient(row) {
     cabin: row.cabin,
     passengers: row.passengers,
     createdAt: row.created_at,
+    // 上次成功比价的时间（Cron 写的）。为 null = 还没比过价，
+    // 此时页面**不能**把 currentPrice 当成「今天抓到的」，会退回显示 basePrice + 「订阅时的价格」
+    lastCheckedAt: row.last_checked_at,
     lastNotified: row.last_notified_at,
   };
 }

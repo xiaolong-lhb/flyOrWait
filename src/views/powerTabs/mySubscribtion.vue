@@ -3,13 +3,16 @@
   <div v-loading="loading" element-loading-background="rgba(255, 255, 255, 0.6)" class="subs">
     <template v-if="items.length">
       <!--
-        定时比价还没做 ⇒ 卡片上的价格**不会自动更新**，必须在最上面说清一次。
-        ⚠️ 原文案是「邮件通知已关闭，降价时不会发邮件（订阅仍在正常监控）」——
-           「仍在正常监控」是**反向的谎**：监控根本没实现。别再改回去。
-           （等 Cron + 通知真做出来，这句换回「邮件通知已关闭…去开启」）
+        ⏰ Cron 已于 2026-10-21 上线：vercel.json 里 schedule 为 UTC 01:00 = 北京 09:00，每天一轮。
+        ⇒ 这句必须如实说「会自动更新」。别退回「定时比价尚未开通 —— 不会自动更新」——
+          那是**反向的谎**（订阅了其实会动），比不提更糟。
+        ⚠️ 也别写成「降价了一定会发邮件」：只在跌破阈值那一刻发一封，
+          同一条订阅只发一次（发完就置 expired，不会再反复打扰）。
       -->
       <div class="notice">
-        <span>定时比价尚未开通 —— 下面的价格是你订阅时查到的，暂时不会自动更新</span>
+        <span
+          >每天 9:00（北京时间）自动比价一次 —— 跌破提醒阈值时发一封邮件，同一条订阅只发一次</span
+        >
       </div>
 
       <!-- 监控中的航线（含已暂停，靠右上角 badge 区分） -->
@@ -30,14 +33,21 @@
           盯价航班 为 null 时，监控基准回落为「该航线全列表最低价」
         -->
         <div class="meta">
+          <!--
+            最近价格。两条来源，按「有没有真的比过价」决定用哪条：
+              · lastCheckedAt 有值 → Cron 抓过价了 → 显示 currentPrice + 抓价时间
+              · lastCheckedAt 为空 → 还没比过（刚订阅 / 尚未到 9 点 / 老数据）→
+                显示 basePrice，并**如实标「订阅时的价格」**
+            ⭐ 判断依据必须是 lastCheckedAt，不能拿 currentPrice 是否为空来判断：
+               新建订阅时 toRow 会把 current_price 初始化成 base_price，它永远不是 null，
+               用它判断会把「没比过价」说成「这是今天抓的」。
+          -->
           <div class="cell">
-            上次价格
-            <!--
-              ⚠️ 别改回 currentPrice：那是「由 Cron 每天比价后回写」的字段，
-                 Cron 没做 ⇒ 它永远停在创建时那个值或 null，显示出来会让人以为是实时价。
-                 basePrice 是**有据可依**的：就是用户订阅这条航线时查到的价格。
-            -->
-            <b>{{ money(s.basePrice) }}</b>
+            最近价格
+            <b>{{ money(s.currentPrice ?? s.basePrice) }}</b>
+            <i class="ts">{{
+              s.lastCheckedAt ? `更新于 ${timeText(s.lastCheckedAt)}` : '订阅时的价格'
+            }}</i>
           </div>
 
           <!-- 提醒阈值：只有编辑态才变输入框，平时只读 -->
@@ -466,6 +476,15 @@ function goQuery() {
   font-size: 15px;
   font-weight: 600;
   color: #1f2937;
+}
+/* 价格下面那行小字：抓价时间，或「订阅时的价格」。
+   用 <i> 只是语义上当作附注，font-style 必须显式 normal，否则浏览器会给成斜体 */
+.sub .meta .cell .ts {
+  display: block;
+  margin-top: 2px;
+  font-size: 11.5px;
+  font-style: normal;
+  color: #9ca3af;
 }
 .sub .meta input {
   width: 120px;

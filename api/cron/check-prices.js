@@ -76,6 +76,30 @@ async function logNotice(row, price, kind, sendStatus, note) {
   if (note) console.log(`[cron][${sendStatus}] ${row.origin}→${row.destination} ${note}`);
 }
 
+/**
+ * 读「邮件通知总开关」（设置页 setting.vue 的那个）。
+ *
+ * 语义以设置页文案为准：**关掉 = 不再发信，但订阅仍在监控**。
+ * 所以它只决定第 ⑤ 步「发不发信」，绝不影响抓价与回写 current_price ——
+ * 价格在更前面就已经落库了，页面照常看到最新价。
+ *
+ * 读不到要分两种情况，不能一锅端：
+ *   · 表里没这行 → 用户从没设置过，按默认开启（与 api/settings.js 的 DEFAULTS 一致）
+ *   · 查询报错   → 按「关闭」处理：宁可这轮不发信，也不发一封用户可能早就关掉的邮件。
+ *                  价格照常回写，监控本身不断；原因写进 degraded 供日志追溯。
+ */
+async function readNotifyEnabled(ownerId) {
+  const { data, error } = await getSupabase()
+    .from('user_settings')
+    .select('notify_enabled')
+    .eq('owner_id', ownerId)
+    .maybeSingle();
+
+  if (error) return { enabled: false, degraded: `读取邮件开关失败：${error.message}` };
+  if (!data) return { enabled: true, degraded: null };
+  return { enabled: data.notify_enabled !== false, degraded: null };
+}
+
 /** 一条订阅的使命结束：标 expired + 记下发信时间。这两件事必须一起做，否则状态会说谎 */
 async function finish(row, notifiedAt) {
   const { error } = await getSupabase()
@@ -93,17 +117,25 @@ async function finish(row, notifiedAt) {
 
 /** 只更新「当前最低价」—— 没到价也要把数据刷新，用户打开页面看到的是今天的价 */
 async function saveCurrentPrice(row, price) {
+  const checkedAt = new Date().toISOString();
+
   const { error } = await getSupabase()
     .from('subscriptions')
-    .update({ current_price: price, updated_at: new Date().toISOString() })
+    // last_checked_at 单独记，不复用 updated_at —— 后者用户改阈值/邮箱时也会写，
+    // 拿它当「这个价格是几点抓的」会变成谎报（见 db/schema.sql 该列的注释）
+    .update({ current_price: price, last_checked_at: checkedAt, updated_at: checkedAt })
     .eq('id', row.id);
 
   if (error) throw new Error(`回写当前价失败：${error.message}`);
   row.current_price = price;
+  row.last_checked_at = checkedAt;
 }
 
-/** 处理一条订阅。抛错由调用方收集，不影响其它订阅 */
-async function handleOne(row, today, summary) {
+/**
+ * 处理一条订阅。抛错由调用方收集，不影响其它订阅
+ * @param {{enabled: boolean, degraded: string|null}} notify 该订阅所属 owner 的邮件总开关
+ */
+async function handleOne(row, today, summary, notify) {
   const sub = toClient(row);
 
   // ① 幂等 + 自愈：上次已经发成功、但状态没来得及改成 expired（比如函数刚好被超时掐断）。
@@ -125,9 +157,10 @@ async function handleOne(row, today, summary) {
     return;
   }
 
-  // ② 舱位护栏：日历源目前只查经济舱（_apify 里硬编码 economy），
+  // ② 舱位护栏：日历源只查经济舱（_apify 里固定 economy）。
   //    拿经济舱的分位数去给商务舱的订阅下结论就是错的。宁可这轮不做，也不发一封错价邮件。
-  //    （B1 修好、_apify 支持 cabinClass 之后删掉这段）
+  //    ★ 2026-10-23 已在入口把非经济舱订阅挡掉了（api/subscriptions/index.js 的 POST），
+  //      这段现在是**防历史数据**的兜底，不是主路径 —— 别因为「走不到」就删掉。
   if (sub.cabin && sub.cabin !== 'economy') {
     summary.skipped.push(`${sub.from}→${sub.to}：舱位 ${sub.cabin}，日历源只支持经济舱，本轮跳过`);
     return;
@@ -150,6 +183,21 @@ async function handleOne(row, today, summary) {
   if (!hit && !dueDeadline) return;
 
   const kind = hit ? 'hit' : 'deadline';
+
+  // ⑤ 邮件总开关：关掉 = 不发信，但**监控照旧**（价格在上面已经回写完了，页面看得到最新价）。
+  //    此时**不写 notify_log、也不置 expired** —— 订阅的使命没有结束，只是这封信先不发。
+  //    用户哪天重新打开开关，第二天若仍命中就正常发信，不会漏掉。
+  //    必须放在 dry 判断之前：dry 演练也要能看出「本来会发、但因为开关关着没发」。
+  if (!notify.enabled) {
+    summary.muted.push({
+      route: `${sub.from}→${sub.to}`,
+      to: sub.email,
+      kind,
+      price,
+      note: notify.degraded ?? '邮件通知已关闭',
+    });
+    return;
+  }
 
   // 演练模式：走到「本来要发信」这一步就停，不写库、不发信，只报出来。
   // 为什么要留这个口子：真跑一次会花钱、会真发邮件、还会把订阅改成 expired，
@@ -234,6 +282,7 @@ export default async function handler(req, res) {
     deadline: 0, // 发了到期信
     alreadySent: 0, // 已有成功记录（幂等跳过 / 补状态）
     wouldSend: [], // 仅 dry 模式：本来会发哪些信
+    muted: [], // 该发信了，但「邮件通知」总开关是关的 → 只回写价格、不发信
     failed: [],
     skipped: [],
     expired: 0,
@@ -258,6 +307,11 @@ export default async function handler(req, res) {
     // dry 模式没真写库，所以要自己把「出发日已过」的排掉，别去给飞走的航班抓价
     const pending = rows.filter((row) => row.status === 'active' && row.depart_date >= today);
 
+    // 邮件开关按 owner 缓存：同一个人有多条订阅时只查一次库。
+    // 缓存建在 handler 内而不是模块级 —— 模块级会被 serverless 复用实例带到下一次请求，
+    // 那样用户刚关掉开关，下一轮还可能读到「开」。
+    const notifyCache = new Map();
+
     for (let i = 0; i < pending.length; i++) {
       const row = pending[i];
       // 时间不够就不再开始新的：宁可不做，也不要做到一半被平台掐断
@@ -266,7 +320,10 @@ export default async function handler(req, res) {
         break;
       }
       try {
-        await handleOne(row, today, summary);
+        if (!notifyCache.has(row.owner_id)) {
+          notifyCache.set(row.owner_id, await readNotifyEnabled(row.owner_id));
+        }
+        await handleOne(row, today, summary, notifyCache.get(row.owner_id));
       } catch (e) {
         // 单条失败不连累整批：记下来，明天 Cron 还会再来看它
         summary.failed.push(`${row.origin}→${row.destination}：${e.message}`);

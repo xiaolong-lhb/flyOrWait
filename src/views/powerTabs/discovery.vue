@@ -88,15 +88,14 @@
           />
         </div>
 
-        <!-- 舱位 / 人数 -->
-        <div class="field">
-          <label>舱位</label>
-          <el-select v-model="form.cabin" class="plain" :teleported="true">
-            <el-option v-for="c in CABINS" :key="c.value" :label="c.label" :value="c.value" />
-          </el-select>
-        </div>
-
-        <div class="field">
+        <!--
+          舱位：**已砍掉**（2026-10-23 决定）。
+          日历源 api/_apify.js 里 cabinClass 是硬编码 economy，判据也按经济舱分位算，
+          留着「商务舱 / 头等舱」选项 = 让人以为选了就查商务舱，实际返回的是经济舱的数。
+          与其做一个算错的选项，不如不提供 —— 这不是产品核心，以后要加成本很低。
+          ⇒ 人数独占一行（原来是和舱位平分一行，舱位删了不补 full 会留半个空格子）。
+        -->
+        <div class="field full">
           <label>人数</label>
           <el-input-number
             v-model="form.passengers"
@@ -159,14 +158,6 @@ import { AIRPORTS, findAirport } from '../../data/airports';
 const route = useRoute();
 const router = useRouter();
 
-/** 舱位选项 */
-const CABINS = [
-  { value: 'economy', label: '经济舱' },
-  { value: 'premium', label: '超级经济舱' },
-  { value: 'business', label: '商务舱' },
-  { value: 'first', label: '头等舱' },
-];
-
 /** 日期灵活度：非「固定日期」时把日期范围交给 Agent 扫描 */
 const FLEX_OPTIONS = [
   { value: 'fixed', label: '固定日期' },
@@ -193,7 +184,6 @@ const form = reactive({
   to: 'PEK',
   departDate: '',
   returnDate: '',
-  cabin: 'economy',
   passengers: 1,
   flexibility: 'fixed', // fixed / plus3 / plus7 / month
 });
@@ -240,7 +230,6 @@ function toQuery() {
   const query = {
     from: form.from,
     to: form.to,
-    cabin: form.cabin,
     passengers: String(form.passengers),
     flexibility: form.flexibility,
   };
@@ -313,7 +302,6 @@ onMounted(() => {
 
   form.from = q.from;
   form.to = q.to || form.to;
-  if (q.cabin) form.cabin = q.cabin;
   if (q.passengers) form.passengers = Number(q.passengers) || 1;
   if (q.flexibility) form.flexibility = q.flexibility;
   if (q.departDate) form.departDate = q.departDate;
