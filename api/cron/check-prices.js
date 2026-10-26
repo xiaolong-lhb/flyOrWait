@@ -238,6 +238,50 @@ async function handleOne(row, today, summary, notify) {
   else summary.deadline += 1;
 }
 
+/**
+ * ── 运行流水（cron_log）──
+ * 为什么非要有它（10-26 血的教训）：10-24 / 10-25 两天的 cron 一次都没留下痕迹 ——
+ * 库里没变、Vercel 免费版日志只留 30 分钟，于是四种完全不同的故障长得**一模一样**：
+ *   ① 压根没被调度  ② 鉴权/环境变量 500  ③ 抓价抛错被循环 catch 吞掉  ④ 60s 被平台掐断
+ * 排查只能靠猜（这次真猜错了一轮：先以为阈值没命中，实际是 CRON_SECRET 没配）。
+ * ⇒ 每次运行**进来就先插一条 started**，跑完再补 finished_at / ok / summary：
+ *   · 只有 started、没有 finished_at → 跑起来了但被超时掐断
+ *   · 连 started 都没有              → 压根没被调度，或在写库之前就 500（鉴权/环境变量）
+ *   · started + ok=false + note      → 半路抛错，原因写在 note
+ * 写流水失败**绝不能拖垮主流程**（表没建、网络抖动都可能）⇒ 吞掉并 console.error。
+ *
+ * ⚠️ dry 模式也照写流水：`?dry=1` 那条铁律约束的是**业务数据**（subscriptions / notify_log
+ *   一个字都不能写）。运行流水不是业务状态，恰恰相反 —— 不写它，「演练到底跑没跑」同样无从证明。
+ */
+async function logRunStart(dry) {
+  try {
+    const { data, error } = await getSupabase()
+      .from('cron_log')
+      .insert({ dry })
+      .select('id')
+      .maybeSingle();
+    if (error) throw new Error(error.message);
+    return data?.id ?? null;
+  } catch (e) {
+    console.error('[cron][log] 写运行流水失败（不影响本轮执行）：', e.message);
+    return null;
+  }
+}
+
+/** 给这次运行收尾。id 为 null（流水没写成功）时直接跳过 */
+async function logRunEnd(id, { ok, summary = null, note = null }) {
+  if (!id) return;
+  try {
+    const { error } = await getSupabase()
+      .from('cron_log')
+      .update({ finished_at: new Date().toISOString(), ok, summary, note })
+      .eq('id', id);
+    if (error) throw new Error(error.message);
+  } catch (e) {
+    console.error('[cron][log] 收尾运行流水失败：', e.message);
+  }
+}
+
 export default async function handler(req, res) {
   res.setHeader('Cache-Control', 'no-store');
 
@@ -262,18 +306,20 @@ export default async function handler(req, res) {
     return;
   }
 
-  if (!isMailConfigured()) {
-    res.status(500).json({
-      code: 5000,
-      message: '缺少环境变量 MAIL_USER / MAIL_PASS，发不出信，本轮不执行',
-      data: null,
-    });
-    return;
-  }
-
   const started = Date.now();
   const today = todayShanghai();
   const dry = ['1', 'true'].includes(String(req.query?.dry ?? ''));
+
+  // 鉴权通过就先留痕。放在 MAIL 检查**之前**：缺 MAIL_* 也是一种「跑不起来」，同样要留下证据
+  const runId = await logRunStart(dry);
+
+  if (!isMailConfigured()) {
+    const message = '缺少环境变量 MAIL_USER / MAIL_PASS，发不出信，本轮不执行';
+    await logRunEnd(runId, { ok: false, note: message });
+    res.status(500).json({ code: 5000, message, data: null });
+    return;
+  }
+
   const summary = {
     today,
     dry,
@@ -330,11 +376,14 @@ export default async function handler(req, res) {
       }
     }
   } catch (e) {
+    // 整轮挂了（读订阅失败之类）：流水要标 ok=false 并写明原因，别只回给调用方
+    await logRunEnd(runId, { ok: false, note: e.message });
     res.status(500).json({ code: 5000, message: e.message, data: null });
     return;
   }
 
   summary.elapsedMs = Date.now() - started;
   console.log('[cron] 本轮结果', JSON.stringify(summary));
+  await logRunEnd(runId, { ok: true, summary });
   res.status(200).json({ code: 0, message: 'ok', data: summary });
 }

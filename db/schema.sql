@@ -236,6 +236,34 @@ create index if not exists query_log_owner_time_idx
   on public.query_log (owner_id, queried_at desc);
 
 
+-- ── 表五：Cron 运行流水 ────────────────────────────────────────────────
+--  ★ 为什么必须有（10-26 踩的坑）：cron 原来唯一的输出是 console.log，
+--    而 Vercel 免费版日志只留 30 分钟。于是「压根没被调度 / 鉴权 500 / 抓价抛错 /
+--    60s 被掐断」四种完全不同的故障在库里长得**一模一样**（什么都没变），
+--    排查只能靠猜 —— 这次就猜错了一轮（以为是阈值没命中，实际是 CRON_SECRET 没配）。
+--
+--  用法：每次运行**进来先插一条**（只写 ran_at + dry），跑完再补 finished_at / ok / summary。
+--    · 有 ran_at、finished_at 为空  → 跑起来了但被平台超时掐断
+--    · 连行都没有                  → 压根没被调度，或在写库之前就 500（鉴权/环境变量）
+--    · ok = false + note            → 半路抛错，原因在 note；summary 为空表示没走到业务逻辑
+--  ★ 这条记录**不回答**「今天比了几条价」这类业务问题（那看 subscriptions.last_checked_at），
+--    它只回答「这一轮到底有没有跑、跑完了没」。
+create table if not exists public.cron_log (
+  id          uuid        primary key default gen_random_uuid(),
+  ran_at      timestamptz not null default now(),
+  finished_at timestamptz,                  -- 空 = 这一轮没跑完（超时被掐断 / 进程被杀）
+  ok          boolean,                      -- 空 = 没跑完，无从判断
+  dry         boolean     not null default false,
+  summary     jsonb,                        -- 跑完时由 handler 写入的统计（checked/hit/failed…）
+  note        text                          -- 失败原因（整轮抛错 / 缺 MAIL_* 之类）
+);
+
+-- 排查时永远是「看最近几条」，按时间倒序的索引正好覆盖
+create index if not exists cron_log_ran_at_idx
+  on public.cron_log (ran_at desc);
+
+
+
 -- ══════════════════════════════════════════════════════════════════════
 --  权限（这一段不能省）
 -- ══════════════════════════════════════════════════════════════════════
@@ -250,6 +278,7 @@ grant all on table public.subscriptions to service_role;
 grant all on table public.notify_log to service_role;
 grant all on table public.user_settings to service_role;
 grant all on table public.query_log to service_role;
+grant all on table public.cron_log to service_role;
 
 -- 开启行级安全（RLS）但不写任何 policy：
 --   → service_role 带 BYPASSRLS，后端读写不受影响
@@ -259,12 +288,14 @@ alter table public.subscriptions enable row level security;
 alter table public.notify_log enable row level security;
 alter table public.user_settings enable row level security;
 alter table public.query_log enable row level security;
+alter table public.cron_log enable row level security;
 
 
 -- ══════════════════════════════════════════════════════════════════════
---  验证：跑完这段应该看到四张表都返回 0 或更多
+--  验证：跑完这段应该看到五张表都返回 0 或更多
 -- ══════════════════════════════════════════════════════════════════════
 -- select count(*) as subscriptions_rows from public.subscriptions;
 -- select count(*) as notify_log_rows    from public.notify_log;
 -- select count(*) as user_settings_rows from public.user_settings;
 -- select count(*) as query_log_rows     from public.query_log;
+-- select count(*) as cron_log_rows      from public.cron_log;
