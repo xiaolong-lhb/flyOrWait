@@ -609,7 +609,8 @@ async function handleSubscribe() {
   if (subscribing.value) return;
   if (!validateSubscribe()) return;
 
-  // 出发日：固定日期用用户选的；整月最优时用 Agent 挑出的最优日
+  // 出发日：固定日期用用户选的；整月最优时用**后端算出的**最低价日
+  // （api/result.js 里对整段窗口 reduce 取最低价 → _compose.js:488 selectedCell，不是模型挑的）
   const departDate = params.departDate || data.value.selected.date;
   const flight = pickedFlight.value;
 
@@ -618,7 +619,8 @@ async function handleSubscribe() {
   try {
     // 写入后端（POST /api/subscriptions）。字段只说业务语言，数据库列名由后端翻译。
     // 后端由 Vercel Cron 每天定时调用实时价 API 比价，低于阈值时发邮件；
-    // 【AI】降价邮件正文由 DeepSeek 生成（含紧迫度 + 当前价 vs 阈值对比 + 下一步建议）。
+    // 邮件正文是**服务端固定模板**（api/_mail.js 的 buildHitMail / buildDeadlineMail），
+    // 不由模型生成 —— 发出去收不回，判定句与数字必须可复现、可审。
     res = await subscriptions.addSubscription({
       from: params.from,
       to: params.to,
