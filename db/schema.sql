@@ -264,6 +264,66 @@ create index if not exists cron_log_ran_at_idx
 
 
 
+-- ── 表六：Agent 运行流水（run / step 两张）────────────────────────────
+--  ★ 为什么不用 query_log 扩列（一度是这么打算的，翻过表结构后否掉了）：
+--    query_log 只有四列（id / owner_id / queried_at），是**纯计数表**，连航线都没存。
+--    往里塞「第几轮调了哪个工具、参数是什么、返回什么」，等于把两张语义完全不同的表焊死。
+--    agent 的一次运行是「1 个 run 对 N 个 step」，跟「用户查了一次价」不是一个粒度量级。
+--
+--  ★ 形态直接照抄 cron_log（表五），因为它解决的是同一类问题：
+--    线上没有日志可看时，怎么从库里分辨「没跑 / 跑到一半被掐 / 半路抛错 / 跑完了」。
+--    · 有 started_at、finished_at 为空  → 跑起来了但被超时掐断
+--    · 连行都没有                       → 压根没进来（鉴权 / 环境变量 / 路由错）
+--    · status = 'failed' + error        → 半路抛错，原因在 error
+--
+--  ★ 与 notify_log 相反的取舍：notify_log 刻意**不**随订阅级联删除（那是业务凭证），
+--    这里刻意**要**级联（on delete cascade）—— step 是纯调试痕迹，
+--    run 没了它没有任何独立价值，留着只会让表无限长大。
+create table if not exists public.agent_run (
+  id                uuid        primary key default gen_random_uuid(),
+  owner_id          text        not null,
+  -- 入口形态：intent（自然语言→参数）/ explain（解释判据）/ chat（多轮）
+  -- 用 text 不用 enum：加一种入口不该要求改表结构
+  surface           text        not null,
+  input_text        text        not null,        -- 用户原话，排查「模型为什么会这么答」的第一手材料
+  status            text        not null default 'running',  -- running | ok | failed | aborted
+  model             text,                        -- 实际用的模型名（换模型后要能对得上账）
+  started_at        timestamptz not null default now(),
+  finished_at       timestamptz,                 -- 空 = 没跑完
+  rounds            integer     not null default 0,   -- 模型往返轮数
+  tool_calls        integer     not null default 0,   -- 实际执行的工具次数
+  prompt_tokens     integer,                     -- 空 = provider 没返回用量
+  completion_tokens integer,
+  answer            text,                        -- 最终回答（非流式时；流式只存摘要）
+  error             text,                        -- 失败原因
+  meta              jsonb                        -- 预留：模型参数、耗时分解、缓存命中数
+);
+
+-- 排查永远是「看这个人最近几次」，按时间倒序 + owner 过滤正好覆盖
+create index if not exists agent_run_owner_time_idx
+  on public.agent_run (owner_id, started_at desc);
+
+create table if not exists public.agent_step (
+  id          uuid        primary key default gen_random_uuid(),
+  run_id      uuid        not null references public.agent_run (id) on delete cascade,
+  seq         integer     not null,              -- 第几步（从 1 开始，按执行顺序）
+  -- llm = 模型的一次决策（含它想调哪个工具）；tool = 我们执行了一次工具
+  kind        text        not null,
+  tool_name   text,                              -- kind=tool 时才有
+  args        jsonb,                             -- 模型给的原始参数（**未校验前**，排查要用原样）
+  result      jsonb,                             -- 裁剪后的返回摘要，别存整包（一张日历就几十 KB）
+  ok          boolean,                           -- 空 = 没跑完
+  error       text,
+  duration_ms integer,
+  created_at  timestamptz not null default now()
+);
+
+-- 「这一次 run 按顺序看」是唯一查询方式
+create index if not exists agent_step_run_seq_idx
+  on public.agent_step (run_id, seq);
+
+
+
 -- ══════════════════════════════════════════════════════════════════════
 --  权限（这一段不能省）
 -- ══════════════════════════════════════════════════════════════════════
@@ -279,6 +339,8 @@ grant all on table public.notify_log to service_role;
 grant all on table public.user_settings to service_role;
 grant all on table public.query_log to service_role;
 grant all on table public.cron_log to service_role;
+grant all on table public.agent_run to service_role;
+grant all on table public.agent_step to service_role;
 
 -- 开启行级安全（RLS）但不写任何 policy：
 --   → service_role 带 BYPASSRLS，后端读写不受影响
@@ -289,6 +351,8 @@ alter table public.notify_log enable row level security;
 alter table public.user_settings enable row level security;
 alter table public.query_log enable row level security;
 alter table public.cron_log enable row level security;
+alter table public.agent_run enable row level security;
+alter table public.agent_step enable row level security;
 
 
 -- ══════════════════════════════════════════════════════════════════════
@@ -299,3 +363,5 @@ alter table public.cron_log enable row level security;
 -- select count(*) as user_settings_rows from public.user_settings;
 -- select count(*) as query_log_rows     from public.query_log;
 -- select count(*) as cron_log_rows      from public.cron_log;
+-- select count(*) as agent_run_rows     from public.agent_run;
+-- select count(*) as agent_step_rows    from public.agent_step;
