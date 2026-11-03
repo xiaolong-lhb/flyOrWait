@@ -34,10 +34,10 @@
  * ══════════════════════════════════════════════════════════════════════
  *  已知约束（写在这里，别等出事才发现）
  * ══════════════════════════════════════════════════════════════════════
- *  · getPriceCalendar 内部抓取超时是硬编码 55s（_apify.js 的 FETCH_TIMEOUT_MS），
- *    而 vercel.json 的 maxDuration 是 60s。⇒ 一次 agent run 里**最多只能有一次日历调用**，
- *    否则必被平台掐断。下面 ctx.getCalendar 做了 run 内缓存，就是为这件事。
- *    ⚠️ 待办：把 55s 改成可注入（calendarTimeoutMs），agent 场景压到 ~35s 给模型留时间。
+ *  · 日历抓取超时是**按场景传的**（_apify.getPriceCalendar 的 timeoutMs）：
+ *    页面那条路 55s 刚好，agent 这条留给日历的只有 35s（AGENT_LIMITS.calendarTimeoutMs），
+ *    因为一次 run 还要跑三四轮模型。⇒ 一次 agent run 里最好只抓一次日历，
+ *    下面 ctx.getCalendar 做了 run 内缓存就是为了这件事。
  *  · 一次 run 的工具调用次数与轮数上限在 AGENT_LIMITS，由编排层强制执行（本文件不强制）。
  */
 
@@ -66,8 +66,15 @@ const MAX_CHEAP_DAYS = 5;
 export const AGENT_LIMITS = {
   maxRounds: 6, // 最多几轮「模型想 → 我们执行 → 回给模型」
   maxToolCalls: 8, // 一次 run 内最多执行几次工具
-  /** 日历那一枪独占的时间（内部 55s 太长，这里先记账，等 _apify 支持注入再收紧） */
-  calendarTimeoutMs: 55_000,
+  /**
+   * 日历那一枪的时间预算，直接传给 _apify.getPriceCalendar 的 timeoutMs。
+   *
+   * 55s（页面视角）在这里不能照抄：一次 run 还要跑三四轮模型，每轮几秒。
+   * 35 + 20(单轮模型上限) + 组装 ≈ 55s，压在 Vercel 的 60s 之内。
+   * 代价是比页面那条路更容易撞超时 —— 但撞了也只是这个工具回 ok:false，
+   * 模型会如实说「查不到」，而不是整轮被平台掐断、前端看到网络异常。
+   */
+  calendarTimeoutMs: 35_000,
 };
 
 /* ══════════════════════════════════════════════════════════════════════
@@ -140,7 +147,11 @@ export function createToolContext() {
       stats.cacheHits += 1;
       return calendars.get(key);
     }
-    const days = await getPriceCalendar({ origin, destination });
+    const days = await getPriceCalendar({
+      origin,
+      destination,
+      timeoutMs: AGENT_LIMITS.calendarTimeoutMs,
+    });
     stats.calendarFetches += 1;
     calendars.set(key, days);
     return days;

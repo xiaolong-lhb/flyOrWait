@@ -1,0 +1,117 @@
+{
+  "_说明": [
+    "评测用例表。每跑一次 agent-eval，就按这里的每一条问一遍真模型，再逐条断言。",
+    "",
+    "为什么必须有这张表：模型不是确定性的 —— 同一句话今天调 1 个工具、明天调 3 个。",
+    "改提示词、换模型、加工具之后，靠『感觉变好了』判断等于没判断。",
+    "",
+    "⚠️ 所有问题必须落在回放样本的窗口内（SZX→PEK / SZX→HKG，2026-11-14 ~ 2026-12-13），",
+    "   否则会走到数据源异常分支。要真机跑（不带 --replay）时这些日期同样成立。",
+    "",
+    "字段：",
+    "  toolsAll         必须调用过的工具（每个至少一次）",
+    "  toolsNone        绝对不该出现的工具",
+    "  maxRounds        轮数上限",
+    "  maxToolCalls     工具调用次数上限 —— 这个比轮数更能抓『乱调一气』",
+    "  answerIncludes   答案里必须出现的字符串（全部）",
+    "  answerIncludesAny 答案里至少出现其中一个",
+    "  answerExcludes   答案里绝对不能出现的字符串"
+  ],
+  "cases": [
+    {
+      "id": "cheapest-days",
+      "question": "11月下旬从深圳去北京哪天便宜",
+      "note": "最典型的一问。必须靠 find_cheapest_days 排序，模型只能转述。",
+      "expect": {
+        "status": "ok",
+        "toolsAll": ["find_cheapest_days"],
+        "maxRounds": 3,
+        "maxToolCalls": 2,
+        "answerIncludes": ["1650"],
+        "answerExcludes": ["还更低", "还更高"]
+      }
+    },
+    {
+      "id": "compare-two-dates",
+      "question": "11月20号和25号从深圳去北京，哪天更便宜",
+      "note": "差价必须来自 compare_two_dates 的 diff 字段，模型不许自己减。",
+      "expect": {
+        "status": "ok",
+        "toolsAll": ["compare_two_dates"],
+        "maxRounds": 3,
+        "maxToolCalls": 2,
+        "answerIncludes": ["708"],
+        "answerExcludes": ["还更低", "还更高"]
+      }
+    },
+    {
+      "id": "judge-one-day",
+      "question": "11月23号从深圳去北京，这个价格贵不贵",
+      "note": "11-23 是 1842 / 高档。vsTypical 必须照抄，不许自己形容。",
+      "expect": {
+        "status": "ok",
+        "toolsAll": ["judge_one_day"],
+        "maxRounds": 3,
+        "maxToolCalls": 2,
+        "answerIncludes": ["1842"],
+        "answerExcludes": ["还更低", "还更高"]
+      }
+    },
+    {
+      "id": "out-of-window",
+      "question": "2027年3月从深圳去北京哪天便宜",
+      "note": "超出可查窗口。必须如实说查不到，不许编一个档位。",
+      "expect": {
+        "status": "ok",
+        "maxRounds": 3,
+        "maxToolCalls": 2,
+        "answerIncludesAny": ["超出", "可查", "窗口", "查不到", "无法"],
+        "answerExcludes": ["最便宜的是 3 月"]
+      }
+    },
+    {
+      "id": "missing-origin",
+      "question": "11月下旬去北京哪天便宜",
+      "note": "没给出发城市。该反问，不该自己猜一个代码就开查。",
+      "expect": {
+        "status": "ok",
+        "maxToolCalls": 0,
+        "answerIncludesAny": ["从哪", "出发", "哪个城市", "哪个机场"]
+      }
+    },
+    {
+      "id": "subscribe-draft",
+      "question": "帮我盯着11月27号深圳到北京，降到1500就提醒我",
+      "note": "第一版没有写库权限。可以出草稿、可以问邮箱，但绝不能宣称已经建好。",
+      "expect": {
+        "status": "ok",
+        "maxRounds": 4,
+        "maxToolCalls": 3,
+        "answerIncludesAny": ["邮箱", "邮件", "email"],
+        "answerExcludes": ["已创建", "已添加", "已设置", "已经创建"]
+      }
+    },
+    {
+      "id": "month-calendar",
+      "question": "把深圳到北京11月每天的参考价列给我",
+      "note": "要整月明细，该走 search_price_calendar 而不是判据工具。",
+      "expect": {
+        "status": "ok",
+        "toolsAll": ["search_price_calendar"],
+        "maxRounds": 3,
+        "maxToolCalls": 2
+      }
+    },
+    {
+      "id": "budget-multi-day",
+      "question": "11月15到19号这几天，从深圳去北京哪天最便宜",
+      "note": "考察它会不会为了比较而连调五次 judge_one_day。一次 find_cheapest_days 就够。",
+      "expect": {
+        "status": "ok",
+        "toolsAll": ["find_cheapest_days"],
+        "maxRounds": 3,
+        "maxToolCalls": 2
+      }
+    }
+  ]
+}

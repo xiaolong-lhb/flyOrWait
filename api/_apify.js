@@ -59,14 +59,18 @@ const API = 'https://api.apify.com/v2';
  *
  *   如果这里放任它跑 230 秒，超时那一刻是**平台**把我们掐掉 —— 握手直接断，
  *   前端只会看到一句「网络异常」，我们自己写的「Apify 抓取超时」永远没机会回给用户。
- *   所以把内部超时收到 50 秒（服务端参数）/ 55 秒（本地 fetch 等待），
- *   留 5 秒给上层组装响应 —— 超时也超得**有话说**。
+ *   所以内部超时要留出余量 —— 超时也超得**有话说**。
+ *
+ *   ★ 这个超时现在是**入参**（timeoutMs），不再写死：
+ *     页面那条路（/api/result、/api/calendar）一次只干这一件事，55s 刚好；
+ *     agent 那条路还要留时间给模型来回三四轮，必须自己传更小的值。
+ *     写死的话「一次 run 只能抓一次日历」就不只是设计约束，而是物理规律。
  *
  *   三层超时由内到外逐层放大：Apify 55s → 后端函数 60s → 浏览器 65s。
+ *   （agent 那条路是：Apify 35s → 单轮模型 20s → 后端函数 60s。）
  */
-const ACTOR_TIMEOUT_S = 50;
-/** 本地 fetch 侧的超时，比上面再宽一点，避免「服务端刚算完、我们这边先断了」 */
-const FETCH_TIMEOUT_MS = 55_000;
+/** 默认超时：页面视角（/api/result、/api/calendar、Cron）用这个值 */
+const DEFAULT_FETCH_TIMEOUT_MS = 55_000;
 /** 默认抓「今天起多少天」的日历。90 天 ≈ $0.018；改大改小直接改成本，别乱调 */
 const DEFAULT_CALENDAR_DAYS = 90;
 /** 样例目录（项目根 samples/）—— 只在本机开发期用到，线上由 .vercelignore 挡在外面 */
@@ -136,10 +140,14 @@ function normalize(items) {
 
 /**
  * 真调一次 actor（阻塞式，20~60 秒），返回 dataset 行。
- * @param {{ origin: string, destination: string, currency: string, days: number }} p
+ * @param {{ origin: string, destination: string, currency: string, days: number, timeoutMs: number }} p
  */
-async function runActor({ origin, destination, currency, days }) {
+async function runActor({ origin, destination, currency, days, timeoutMs }) {
   const token = apiToken();
+
+  // 服务端超时比本地再早 5 秒：让它先返回「超时」这个结果，而不是我们这边先断手。
+  // 下限 10 秒 —— 再小就是必然超时，留给服务端一个能做事的窗口。
+  const actorTimeoutS = Math.max(10, Math.round(timeoutMs / 1000) - 5);
 
   const body = {
     origin,
@@ -169,7 +177,7 @@ async function runActor({ origin, destination, currency, days }) {
   let res;
   try {
     res = await fetch(
-      `${API}/acts/${ACTOR}/run-sync-get-dataset-items?timeout=${ACTOR_TIMEOUT_S}`,
+      `${API}/acts/${ACTOR}/run-sync-get-dataset-items?timeout=${actorTimeoutS}`,
       {
         method: 'POST',
         headers: {
@@ -178,12 +186,12 @@ async function runActor({ origin, destination, currency, days }) {
           Authorization: `Bearer ${token}`,
         },
         body: JSON.stringify(body),
-        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+        signal: AbortSignal.timeout(timeoutMs),
       },
     );
   } catch (e) {
     if (e.name === 'TimeoutError') {
-      throw new Error(`Apify 抓取超时（超过 ${Math.round(FETCH_TIMEOUT_MS / 1000)} 秒）`, {
+      throw new Error(`Apify 抓取超时（超过 ${Math.round(timeoutMs / 1000)} 秒）`, {
         cause: e,
       });
     }
@@ -212,7 +220,9 @@ async function runActor({ origin, destination, currency, days }) {
 /**
  * 价格日历：一次拿到「今天起 days 天」的每日最低价。
  *
- * @param {{ origin: string, destination: string, currency?: string, days?: number }} p
+ * @param {{ origin: string, destination: string, currency?: string, days?: number, timeoutMs?: number }} p
+ *   timeoutMs 是**整个抓取**的预算（本地等待），服务端参数会自动比它早 5 秒。
+ *   不传就用页面视角的 55s；agent 那条路要自己传小值（见 api/_agentTools.js 的 AGENT_LIMITS）。
  * @returns {Promise<Array<{ day: string, price: number, isCheapest: boolean }>>} 按日期升序
  */
 export async function getPriceCalendar({
@@ -220,6 +230,7 @@ export async function getPriceCalendar({
   destination,
   currency = 'CNY',
   days = DEFAULT_CALENDAR_DAYS,
+  timeoutMs = DEFAULT_FETCH_TIMEOUT_MS,
 }) {
   if (replayEnabled()) {
     const name = `apify-calendar-${origin.toLowerCase()}-${destination.toLowerCase()}.json`;
@@ -227,6 +238,8 @@ export async function getPriceCalendar({
     return normalize(await readSample(name));
   }
 
-  console.log(`[apify][LIVE] 真调 actor：${origin}→${destination}，${days} 天，走网络`);
-  return normalize(await runActor({ origin, destination, currency, days }));
+  console.log(
+    `[apify][LIVE] 真调 actor：${origin}→${destination}，${days} 天，超时 ${Math.round(timeoutMs / 1000)}s，走网络`,
+  );
+  return normalize(await runActor({ origin, destination, currency, days, timeoutMs }));
 }
