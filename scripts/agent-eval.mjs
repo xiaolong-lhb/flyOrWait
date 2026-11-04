@@ -39,6 +39,19 @@ import { join } from 'node:path';
 import { TOOLS } from '../api/_agentTools.js';
 import { resolveLLM, runAgent } from '../api/_agentRun.js';
 
+/**
+ * 答案里绝对不该出现的名字 —— 从工具表直接取，不手抄：
+ * 以后加了新工具，这条检查自动覆盖，不用记得回来改。
+ */
+const TOOL_NAME_LEAKS = TOOLS.map((t) => t.function.name);
+
+/**
+ * 档位取值也必须换成中文（提示词铁律 2）。用词边界匹配是因为
+ * 「below」里含「low」——直接 includes 会把合法答案判挂。
+ * 机场代码（SZX/PEK）不在此列，那是给用户看的真代码。
+ */
+const VALUE_LEAKS = [/\blow\b/i, /\btypical\b/i, /\bhigh\b/i, /\bbelow\b/i, /\bwithin\b/i, /\babove\b/i];
+
 const ROOT = join(import.meta.dirname, '..');
 const CASES_FILE = join(ROOT, 'scripts', 'eval-cases.json');
 const MAX_DURATION_MS = 90_000;
@@ -159,6 +172,15 @@ function evaluate(expect, result, toolNames) {
   }
   for (const s of expect.answerExcludes ?? []) {
     add(!answer.includes(s), `答案不含「${s}」`);
+  }
+
+  // 全局规则（提示词铁律 8）：工具名只给模型自己看，任何用例的答案里都不许出现。
+  // 不写进每条用例 —— 写进用例就得逐条维护，漏一条就漏一个口子。
+  for (const s of TOOL_NAME_LEAKS) {
+    add(!answer.includes(s), `答案不泄漏工具名「${s}」`);
+  }
+  for (const re of VALUE_LEAKS) {
+    add(!re.test(answer), `答案不泄漏英文档位「${re.source.replaceAll('\\b', '')}」`);
   }
 
   return checks;
