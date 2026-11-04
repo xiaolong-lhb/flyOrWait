@@ -43,7 +43,10 @@ export default function handler(req, res) {
         APIFY_TOKEN: Boolean(process.env.APIFY_TOKEN),
         SERPAPI_KEY: Boolean(process.env.SERPAPI_KEY),
         SKYSCRAPPER_KEY: Boolean(process.env.SKYSCRAPPER_KEY),
-        DEEPSEEK_KEY: Boolean(process.env.DEEPSEEK_KEY),
+        // Agent 的模型 Key。变量名必须和代码里读的**一字不差**：
+        // 这里原来写的是 DEEPSEEK_KEY，而 api/_agentRun.js 读的是 DEEPSEEK_API_KEY ——
+        // 结果就是「明明配了，探活永远显示 false」，正是这个接口最该防的那种假阴性。
+        DEEPSEEK_API_KEY: Boolean(process.env.DEEPSEEK_API_KEY),
         // 邮件通道（QQ 邮箱 SMTP）：只报「配没配」，绝不回显值。
         // 注意 MAIL_PASS 是 16 位授权码，不是 QQ 登录密码（填错会 EAUTH）。
         MAIL_USER: Boolean(process.env.MAIL_USER),
