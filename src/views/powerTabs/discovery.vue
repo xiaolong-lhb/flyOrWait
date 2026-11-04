@@ -321,6 +321,10 @@ onMounted(() => {
 
 <style scoped>
 .discovery {
+  /* 必须显式 width: 100%：.content 是纵向 flex 容器，
+     flex item 的 auto 外边距会先吸收剩余空间 ⇒ 元素按「内容宽」收缩再居中，
+     max-width 就变成了实际宽度（卡片会窄一大截）。 */
+  width: 100%;
   max-width: 820px;
   margin: 0 auto;
   padding: 40px 20px 60px;

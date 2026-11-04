@@ -440,6 +440,9 @@ async function handleSubscribe() {
 
 <style scoped>
 .result {
+  /* width: 100% 不能省：.content 是纵向 flex 容器，
+     auto 外边距会先吸收剩余空间 ⇒ 按内容宽收缩，max-width 变成实际宽度 */
+  width: 100%;
   max-width: 900px;
   margin: 0 auto;
   padding: 28px 20px 60px;

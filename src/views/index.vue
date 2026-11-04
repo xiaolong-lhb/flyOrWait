@@ -41,6 +41,8 @@ const router = useRouter();
 const QUERY_TAB = { to: '/', label: '查询航班', match: ['discovery', 'result'] };
 const navs = [
   QUERY_TAB,
+  // 「问一问」= 用一句话提问，跟表单填空是两种范式，所以是独立 tab 而不是嵌在查询页里
+  { to: '/ask', label: '问一问', match: ['ask'] },
   { to: '/mySubscribtion', label: '我的订阅', match: ['mySubscribtion'] },
   { to: '/setting', label: '设置', match: ['setting'] },
 ];
@@ -154,8 +156,19 @@ function goHome() {
   background: #eef3ff;
 }
 
-/* 内容区 */
+/* 内容区
+ * min-height: 0 —— flex 子元素默认 min-height: auto，会被内容撑开，
+ *   导致子元素里的 overflow-y: auto 永远不生效（对话页就滚不动了）。
+ * flex-direction: column —— 让 ask.vue 能用 flex:1 撑满「顶栏以下的整块高度」，
+ *   从而实现「消息区自己滚 + 输入区钉在底部」。
+ * ⚠️ 代价：内容区变成 flex 容器后，各页根元素的 `margin: 0 auto` 会先吸收剩余
+ *   空间 ⇒ 元素按内容宽收缩，max-width 变成实际宽度（卡片会窄一大截）。
+ *   所以 discovery / result / mySubscribtion / setting / ask 五个页面的根元素
+ *   都必须显式写 `width: 100%`，留一个就会窄一页。 */
 .content {
+  display: flex;
   flex: 1;
+  flex-direction: column;
+  min-height: 0;
 }
 </style>

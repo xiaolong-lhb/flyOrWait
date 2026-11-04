@@ -28,6 +28,12 @@ const router = createRouter({
           component: () => import('../views/powerTabs/result.vue'),
         },
         {
+          // 对话入口：与「查询航班」是两种范式（填空 vs 提问），所以单独一个页面
+          path: 'ask',
+          name: 'ask',
+          component: () => import('../views/powerTabs/ask.vue'),
+        },
+        {
           path: 'mySubscribtion',
           name: 'mySubscribtion',
           component: () => import('../views/powerTabs/mySubscribtion.vue'),
