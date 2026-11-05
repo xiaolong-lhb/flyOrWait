@@ -17,6 +17,8 @@ import { getIdentityId } from './identity.js';
  *   code     0 = 业务成功；非 0 = 业务失败（四位数字，见下表）
  *   message  说明文字（中文，可直接展示给用户）
  *   data     业务数据；失败时一律 null（不省略字段，前端好判）
+ *            ⚠️ 唯一例外：/api/agent 失败时也回 { conversationId }，
+ *               好让前端重试时接上同一个会话（见该文件顶部说明）
  *
  * 配套的 HTTP 状态码 —— 业务失败也用真实语义，便于 DevTools 一眼看出错、
  * 平台日志能统计错误率（这正是当初选「真实 4xx」而不是「一律 200」的原因）：
@@ -113,6 +115,10 @@ http.interceptors.response.use(
       code: body?.code ?? 5000,
       message: body?.message ?? `请求失败（${err.response.status}）`,
       status: err.response.status,
+      // ⚠️ 失败时 data 一般是 null（约定如此），但有一个例外：
+      //    /api/agent 失败时也会回 { conversationId }，好让前端重试时接上同一个会话。
+      //    不带这个字段，store 就只能靠「成功响应」记得会话，第一句失败就会裂成两个会话。
+      data: body?.data ?? null,
     });
   },
 );

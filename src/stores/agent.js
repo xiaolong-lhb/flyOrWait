@@ -24,22 +24,46 @@ import { toBlocks } from '../utils/markdown.js';
  *  现在只有纯文本块。将来卡片是往 blocks 里再加一种 {type:'card'}，
  *  **不用改数据结构、不用改渲染入口**。详见 src/utils/markdown.js。
  *
+ *  ⚠️ 接口下发的是 answer 原文，转块只在这一层做一次。
+ *    后端再解析一份就必然漂（改一处忘一处，两边静默不一致）。
+ *
+ * ══════════════════════════════════════════════════════════════════════
+ *  会话：activeId 是「当前在聊哪个」，null 表示还没建
+ * ══════════════════════════════════════════════════════════════════════
+ *  懒创建：点「新对话」只是清屏（activeId = null），不发任何请求。
+ *  用户真问出第一句，后端才建会话并把 id 回给我们 —— 否则每次点一下
+ *  「新对话」就在库里留一个空壳，会话列表很快就不能看了。
+ *
+ *  ● 失败时后端也会回 conversationId（data 不是 null），这里必须接住：
+ *    否则第一句就失败的话，用户点重试会再建一个会话，同一个问题裂成两条。
+ *
  * ══════════════════════════════════════════════════════════════════════
  *  并发：同一时刻只跑一条
  * ══════════════════════════════════════════════════════════════════════
  *  后端每问一次都要现爬日历（20~40s）并按次计费，并发两条既不省钱也不省时，
- *  还会让用户不知道该看哪个。所以 sending 为真时直接忽略新的提交。
+ *  还会让用户不知道该看哪个。所以 sending 为真时：
+ *    · 忽略新的提问
+ *    · 禁止切换会话 / 新建 / 删除 —— 否则答案回来时会掉进另一个会话里
  */
 
 /** 重试可能有意义的错误码。5000（服务异常）/ 5030（已停服）重试一百次也一样 */
 const RETRYABLE = new Set([5020, 5040, -1]);
 
 export const useAgentStore = defineStore('agent', () => {
-  /** 消息列表：用户与助手交替 */
+  /** 当前会话的消息：用户与助手交替 */
   const messages = ref([]);
 
   /** 是否有请求在飞 */
   const sending = ref(false);
+
+  /** 会话列表（最近更新的在前）。只在打开抽屉时主动加载，不在进页面就拉 */
+  const conversations = ref([]);
+
+  /** 当前会话 id。null = 新对话还没落库 */
+  const activeId = ref(null);
+
+  /** 正在加载某个会话的历史 */
+  const loadingConv = ref(false);
 
   /** 计时器句柄。不放进 ref，它不需要被渲染 */
   let timer = null;
@@ -54,6 +78,81 @@ export const useAgentStore = defineStore('agent', () => {
     if (timer) clearInterval(timer);
     timer = null;
   }
+
+  /* ══════════════════════════════════════════════════════════════════
+   *  会话
+   * ══════════════════════════════════════════════════════════════════ */
+
+  /**
+   * 拉会话列表。
+   * @param {object} [opts]
+   * @param {boolean} [opts.silent] true = 失败不抛（后台刷新用），
+   *        false = 抛给调用方（用户主动打开抽屉时要能看见「没读到」）
+   */
+  async function loadConversations({ silent = false } = {}) {
+    try {
+      conversations.value = await http.get('/conversations');
+    } catch (e) {
+      if (!silent) throw e;
+      // 静默失败：列表没刷出来不影响正在进行的对话，下次打开抽屉会重试
+    }
+  }
+
+  /**
+   * 切到一个已有会话：拉历史并整体覆盖当前消息。
+   *
+   * 不做增量合并（不像订阅页那样 writeAndSync 之后手动 patch）——
+   * 历史就是服务端那份数据，本地任何「保留几条」都是自找不一致。
+   */
+  async function openConversation(id) {
+    if (sending.value || !id) return;
+    if (id === activeId.value && messages.value.length) return;
+
+    loadingConv.value = true;
+    try {
+      const data = await http.get('/conversations', { params: { id } });
+      activeId.value = data.id;
+      messages.value = data.messages.map(fromServer);
+    } catch (e) {
+      // 4040：这条会话在别处被删了，或者 URL 里的 id 是旧的。
+      // 不能把用户卡在一个空白页上 —— 清成本地新对话，错误照样往上抛给组件提示。
+      if (e?.code === 4040) newChat();
+      throw e;
+    } finally {
+      loadingConv.value = false;
+    }
+  }
+
+  /** 删会话。删完整体重拉列表，不在本地 filter —— 前端不维护数据 */
+  async function removeConversation(id) {
+    if (sending.value || !id) return;
+
+    await http.delete('/conversations', { params: { id } });
+    if (activeId.value === id) newChat();
+    await loadConversations({ silent: true });
+  }
+
+  /** 开新对话：只清屏，不建会话 */
+  function newChat() {
+    if (sending.value) return;
+    stopTimer();
+    messages.value = [];
+    activeId.value = null;
+  }
+
+  /**
+   * 后端回了会话 id 就认下来。
+   * 无论成功失败都要刷一次列表：success 时 updated_at 变了，顺序要跟着变。
+   */
+  function adoptConversation(id) {
+    if (!id) return;
+    activeId.value = id;
+    loadConversations({ silent: true });
+  }
+
+  /* ══════════════════════════════════════════════════════════════════
+   *  提问
+   * ══════════════════════════════════════════════════════════════════ */
 
   /**
    * 发一条问题。
@@ -95,7 +194,11 @@ export const useAgentStore = defineStore('agent', () => {
     }, 1000);
 
     try {
-      const data = await http.post('/agent', { question });
+      const body = { question };
+      // 有会话就带上，让后端把这一轮接到同一段对话里；没有就让它建一个
+      if (activeId.value) body.conversationId = activeId.value;
+
+      const data = await http.post('/agent', body);
       // 真正的块交给解析器，气泡只负责渲染块
       reply.blocks = toBlocks(data?.answer ?? '');
       reply.state = 'ok';
@@ -106,11 +209,15 @@ export const useAgentStore = defineStore('agent', () => {
         toolCalls: data?.toolCalls,
         elapsedMs: data?.elapsedMs,
       };
+      adoptConversation(data?.conversationId);
     } catch (e) {
-      // 已被拦截器归一化成 { code, message, status }，message 可以直接展示
+      // 已被拦截器归一化成 { code, message, status, data }，message 可以直接展示
       reply.state = 'error';
       reply.error = e?.message || '没能拿到回答，请稍后重试';
       reply.retryable = RETRYABLE.has(e?.code);
+      // ★ 失败时后端也给了 conversationId（见 api/agent.js），接住它，
+      //   重试才不会再建一个会话
+      adoptConversation(e?.data?.conversationId);
     } finally {
       stopTimer();
       sending.value = false;
@@ -136,12 +243,38 @@ export const useAgentStore = defineStore('agent', () => {
     await ask(q);
   }
 
-  /** 清空当前对话（期 1 只是清屏；期 2 会同时开一个新会话） */
-  function reset() {
-    stopTimer();
-    messages.value = [];
-    sending.value = false;
-  }
-
-  return { messages, sending, ask, retry, reset };
+  return {
+    messages,
+    sending,
+    conversations,
+    activeId,
+    loadingConv,
+    ask,
+    retry,
+    newChat,
+    loadConversations,
+    openConversation,
+    removeConversation,
+  };
 });
+
+/**
+ * 接口消息 → 前端消息。
+ *
+ * 接口只给 text 原文（后端不做 markdown 解析），所以这里统一转一次块。
+ * 历史里可能混着「这次没能答完」的失败消息 —— 对前端就是一坨普通文本，
+ * 不需要特殊渲染，`status` 留着以后要用再取。
+ */
+function fromServer(m) {
+  return {
+    id: m.id,
+    role: m.role,
+    ...(m.role === 'user'
+      ? { text: m.text }
+      : { blocks: toBlocks(m.text ?? ''), meta: m.meta ?? null }),
+    state: 'ok',
+    error: '',
+    elapsed: 0,
+    retryable: false,
+  };
+}

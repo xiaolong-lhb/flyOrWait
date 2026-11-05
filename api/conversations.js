@@ -3,6 +3,7 @@
  *
  *   GET             列出会话（最近更新的在前）
  *   GET ?id=<uuid>  单个会话 + 它的全部消息
+ *   DELETE ?id=<uuid> 删掉会话（它的 run 靠外键 on delete cascade 一起走）
  *
  * 单条操作用 `?id=` 而不用 `/api/conversations/:id`，跟 /api/subscriptions 同一个理由：
  * Vercel 曾把 api/**.js 的方括号文件名注册成字面量路径，真 uuid 匹配不到
@@ -56,6 +57,11 @@ export default async function handler(req, res) {
     const ownerId = req.headers['x-owner-id'];
     if (!ownerId) {
       res.status(400).json({ code: 4000, message: '缺少身份标识（X-Owner-Id）', data: null });
+      return;
+    }
+
+    if (req.method === 'DELETE') {
+      await deleteConversation(ownerId, String(req.query?.id ?? ''), res);
       return;
     }
 
@@ -160,6 +166,42 @@ async function getConversation(ownerId, id, res) {
     // flatMap：一行 run 摊成「问题 + 回答」两条消息，再拼成一维列表
     data: { ...toClient(conv), messages: runs.flatMap(toMessages) },
   });
+}
+
+/**
+ * 删会话。
+ *
+ * ★ 必须 `.select('id')` 拿回被删的行。
+ *   不带 select 时 PostgREST 只回「成功」，删了 0 行也是成功 ——
+ *   前端会以为删掉了，刷新一看还在。带上 select，0 行就能判成 404。
+ *
+ * run 不用手工删：agent_run.conversation_id 是 on delete cascade。
+ */
+async function deleteConversation(ownerId, id, res) {
+  if (!UUID_RE.test(id)) {
+    res.status(400).json({ code: 4000, message: '无效的会话 ID', data: null });
+    return;
+  }
+
+  const { data, error } = await getSupabase()
+    .from('agent_conversation')
+    // owner_id 进条件：不能删别人的会话（现在只有一个 owner，但约束写进查询）
+    .delete()
+    .eq('owner_id', ownerId)
+    .eq('id', id)
+    .select('id');
+
+  if (error) {
+    console.error('[conversations] 删会话失败：', error.message);
+    res.status(500).json({ code: 5000, message: '删除会话失败', data: null });
+    return;
+  }
+  if (!data?.length) {
+    res.status(404).json({ code: 4040, message: '会话不存在', data: null });
+    return;
+  }
+
+  res.status(200).json({ code: 0, message: 'ok', data: { id } });
 }
 
 /**

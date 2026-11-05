@@ -1,18 +1,23 @@
 <template>
   <div class="ask">
     <header class="chat-head">
-      <div class="who">
-        <span class="name">机票助手</span>
-        <span class="sub">回答依据实时票价参考价</span>
+      <div class="head-left">
+        <button class="ghost icon" type="button" title="历史对话" @click="openDrawer">☰</button>
+        <div class="who">
+          <span class="name">机票助手</span>
+          <span class="sub">回答依据实时票价参考价</span>
+        </div>
       </div>
-      <button class="ghost" type="button" :disabled="sending || !messages.length" @click="handleReset">
+      <button class="ghost" type="button" :disabled="sending || !messages.length" @click="handleNew">
         新对话
       </button>
     </header>
 
     <div ref="scroller" class="chat-body">
-      <!-- 空状态：给三四个能直接点的问题，比一句「请输入」有用 -->
-      <div v-if="!messages.length" class="empty">
+      <p v-if="loadingConv" class="conv-loading">正在打开这段对话…</p>
+
+      <!-- 空状态：给几个能直接点的问题，比一句「请输入」有用 -->
+      <div v-if="!messages.length && !loadingConv" class="empty">
         <div class="big-avatar" aria-hidden="true">✈</div>
         <h1 class="title">想先问什么？</h1>
         <p class="tip">我能查实时票价、挑出最便宜的那几天，也能告诉某一天到底贵不贵。</p>
@@ -45,19 +50,36 @@
     </div>
 
     <ChatComposer :disabled="sending" @submit="handleSubmit" />
+
+    <ConversationDrawer
+      v-model="drawerOpen"
+      :conversations="conversations"
+      :active-id="activeId"
+      :disabled="sending || loadingConv"
+      :loading="listLoading"
+      @create="handleNew"
+      @select="handleSelect"
+      @remove="handleRemove"
+    />
   </div>
 </template>
 
 <script setup>
-import { nextTick, ref, watch } from 'vue';
+import { nextTick, onMounted, ref, watch } from 'vue';
 import { storeToRefs } from 'pinia';
+import { useRoute, useRouter } from 'vue-router';
+import { ElMessage, ElMessageBox } from 'element-plus';
 
 import ChatComposer from '../../components/chat/ChatComposer.vue';
+import ConversationDrawer from '../../components/chat/ConversationDrawer.vue';
 import MessageBubble from '../../components/chat/MessageBubble.vue';
 import { useAgentStore } from '../../stores/agent.js';
 
 const store = useAgentStore();
-const { messages, sending } = storeToRefs(store);
+const { messages, sending, conversations, activeId, loadingConv } = storeToRefs(store);
+
+const route = useRoute();
+const router = useRouter();
 
 /**
  * 示例问题。全部落在日历可查窗口内（约 11-14 ~ 12-13），
@@ -71,8 +93,10 @@ const SAMPLES = [
 ];
 
 const scroller = ref(null);
+const drawerOpen = ref(false);
+const listLoading = ref(false);
 
-/** 滚到底：新增消息、以及回答落地时都该把视线带过去 */
+/** 滚到底：新增消息、回答落地、切会话时，都该把视线带过去 */
 function scrollToBottom() {
   const el = scroller.value;
   if (!el) return;
@@ -86,6 +110,74 @@ watch(
 watch(sending, (v) => {
   if (!v) nextTick(scrollToBottom);
 });
+// 切会话时消息条数可能一样多（比如都是 4 条），length 不变化就不会触发上面那个
+watch(activeId, () => nextTick(scrollToBottom));
+
+/* ── URL 同步 ────────────────────────────────────────────────────────
+ * 会话 id 写进 ?c=<id>，刷新才能回到同一段对话。
+ * 用 replace 不用 push：切会话不该往浏览器历史里堆记录 ——
+ * 用户按返回键应该是「回上一个页面」，不是「回上一个会话」。
+ *
+ * 两个 watch 互相触发，靠「值相同就返回」刹住：
+ *   activeId 变 → 写 URL → 触发第二个 watch → 发现 want === activeId → 跳过
+ */
+watch(activeId, (id) => {
+  const cur = route.query.c || null;
+  if (cur === (id || null)) return;
+  router.replace({ name: 'ask', query: id ? { c: id } : {} });
+});
+
+watch(
+  () => route.query.c,
+  (c) => {
+    const want = c ? String(c) : null;
+    if (want === activeId.value) return;
+
+    if (!want) {
+      // 地址栏里的 c 没了（浏览器后退 / 手动改）⇒ 回到新对话。
+      // 注意：在 /ask 页内点顶部「问一问」也会走到这里，效果等同于开新对话。
+      store.newChat();
+      return;
+    }
+
+    store.openConversation(want).catch((e) => {
+      ElMessage.error(e?.message || '打开会话失败');
+    });
+  },
+);
+
+onMounted(() => {
+  const c = route.query.c ? String(route.query.c) : null;
+
+  if (c) {
+    if (c !== activeId.value) {
+      store.openConversation(c).catch((e) => {
+        ElMessage.error(e?.message || '打开会话失败');
+      });
+    }
+    return;
+  }
+
+  // URL 没带，但 store 里还留着上次的会话（切走再切回来就是这种情况）——
+  // 把 id 补进地址栏，否则一刷新就丢
+  if (activeId.value) {
+    router.replace({ name: 'ask', query: { c: activeId.value } });
+  }
+});
+
+/* ── 交互 ─────────────────────────────────────────────────────────── */
+
+async function openDrawer() {
+  drawerOpen.value = true;
+  listLoading.value = true;
+  try {
+    await store.loadConversations();
+  } catch (e) {
+    ElMessage.error(e?.message || '会话列表读取失败');
+  } finally {
+    listLoading.value = false;
+  }
+}
 
 function handleSubmit(text) {
   store.ask(text);
@@ -95,8 +187,41 @@ function pickSample(text) {
   store.ask(text);
 }
 
-function handleReset() {
-  store.reset();
+function handleNew() {
+  store.newChat();
+  drawerOpen.value = false;
+}
+
+async function handleSelect(id) {
+  // 点的就是当前这段：只是关抽屉，别重新拉一遍
+  if (id === activeId.value) {
+    drawerOpen.value = false;
+    return;
+  }
+  try {
+    await store.openConversation(id);
+    drawerOpen.value = false;
+  } catch (e) {
+    ElMessage.error(e?.message || '打开会话失败');
+  }
+}
+
+async function handleRemove(id) {
+  try {
+    await ElMessageBox.confirm('删除后这段对话就找不回来了。', '删除对话', {
+      confirmButtonText: '删除',
+      cancelButtonText: '取消',
+      type: 'warning',
+    });
+  } catch {
+    return; // 用户点了取消 —— 不是错误，什么都别做
+  }
+
+  try {
+    await store.removeConversation(id);
+  } catch (e) {
+    ElMessage.error(e?.message || '删除失败，请稍后重试');
+  }
 }
 </script>
 
@@ -122,6 +247,11 @@ function handleReset() {
   padding: 14px 2px 12px;
   border-bottom: 1px solid #eef1f5;
 }
+.head-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
 .who {
   display: flex;
   align-items: baseline;
@@ -138,6 +268,7 @@ function handleReset() {
 }
 .ghost {
   padding: 6px 14px;
+  font-family: inherit;
   font-size: 13px;
   color: #4a5568;
   background: #fff;
@@ -154,6 +285,12 @@ function handleReset() {
   color: #c4c8d0;
   cursor: not-allowed;
 }
+/* 图标按钮：正方的，不要被文字按钮的 padding 撑长 */
+.ghost.icon {
+  padding: 6px 9px;
+  font-size: 14px;
+  line-height: 1;
+}
 
 /* ---------- 消息区 ---------- */
 .chat-body {
@@ -162,6 +299,12 @@ function handleReset() {
   padding: 20px 0 4px;
   overflow-y: auto;
   scrollbar-gutter: stable;
+}
+.conv-loading {
+  margin: 0 0 16px;
+  font-size: 12px;
+  color: #9aa5b5;
+  text-align: center;
 }
 
 /* ---------- 空状态 ---------- */
