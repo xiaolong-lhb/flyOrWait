@@ -264,7 +264,35 @@ create index if not exists cron_log_ran_at_idx
 
 
 
--- ── 表六：Agent 运行流水（run / step 两张）────────────────────────────
+-- ── 表六：对话（一次对话 = N 次问答）──────────────────────────────────
+--  ★ 为什么需要它：agent_run 一行就是「一问一答」，但没有东西把连续几问答串起来。
+--    有了这张表 + agent_run.conversation_id，会话列表、切会话、刷新恢复才有依据。
+--
+--  ★ 为什么不建「消息表」：每行 run 的 input_text / answer 本身就是两条消息，
+--    消息顺序 = run 的 started_at 顺序。再建一张 message 表等于把同一份数据抄两遍，
+--    还得保证两边永远一致 —— 那是最容易漂移的写法。
+--
+--  ★ 建在 agent_run 之前：run 的 conversation_id 要引用它，被引用的表必须先存在。
+--
+--  ★ on delete cascade：删会话 = 连同这段对话的 run 一起删（run 再级联删 step）。
+--    跟 notify_log 刻意**不**级联正好相反 —— 那边是「发过邮件的凭证」，
+--    这边是「用户的聊天记录」，用户删掉就是想让它消失。
+create table if not exists public.agent_conversation (
+  id         uuid        primary key default gen_random_uuid(),
+  owner_id   text        not null,
+  -- 标题取第一句问题截断，不让模型起标题（多一次调用多一分钱，还会跑偏）
+  title      text        not null default '新对话',
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()  -- 有新问答时刷新，列表按它倒序
+);
+
+-- 会话列表永远是「这个人最近的几个」，按时间倒序 + owner 过滤正好覆盖
+create index if not exists agent_conversation_owner_time_idx
+  on public.agent_conversation (owner_id, updated_at desc);
+
+
+
+-- ── 表七：Agent 运行流水（run / step 两张）────────────────────────────
 --  ★ 为什么不用 query_log 扩列（一度是这么打算的，翻过表结构后否掉了）：
 --    query_log 只有四列（id / owner_id / queried_at），是**纯计数表**，连航线都没存。
 --    往里塞「第几轮调了哪个工具、参数是什么、返回什么」，等于把两张语义完全不同的表焊死。
@@ -296,6 +324,8 @@ create table if not exists public.agent_run (
   completion_tokens integer,
   answer            text,                        -- 最终回答（非流式时；流式只存摘要）
   error             text,                        -- 失败原因
+  -- 属于哪次对话。空 = 老数据（Step 1 时代的单轮提问），会话列表里不显示它们
+  conversation_id   uuid        references public.agent_conversation (id) on delete cascade,
   meta              jsonb                        -- 预留：模型参数、耗时分解、缓存命中数
 );
 
@@ -322,6 +352,17 @@ create table if not exists public.agent_step (
 create index if not exists agent_step_run_seq_idx
   on public.agent_step (run_id, seq);
 
+-- ★ 升级段：上面的 create table 带 if not exists，对**已经建好的表**不会做任何改动。
+--   老库（Step 1 时代建的 agent_run）没有 conversation_id，必须靠下面这段补。
+--   整段幂等，重复执行无害。
+alter table public.agent_run
+  add column if not exists conversation_id uuid
+  references public.agent_conversation (id) on delete cascade;
+
+-- 「这次对话按时间顺序看」= 历史消息的唯一查询方式
+create index if not exists agent_run_conv_time_idx
+  on public.agent_run (conversation_id, started_at);
+
 
 
 -- ══════════════════════════════════════════════════════════════════════
@@ -339,6 +380,7 @@ grant all on table public.notify_log to service_role;
 grant all on table public.user_settings to service_role;
 grant all on table public.query_log to service_role;
 grant all on table public.cron_log to service_role;
+grant all on table public.agent_conversation to service_role;
 grant all on table public.agent_run to service_role;
 grant all on table public.agent_step to service_role;
 
@@ -351,17 +393,19 @@ alter table public.notify_log enable row level security;
 alter table public.user_settings enable row level security;
 alter table public.query_log enable row level security;
 alter table public.cron_log enable row level security;
+alter table public.agent_conversation enable row level security;
 alter table public.agent_run enable row level security;
 alter table public.agent_step enable row level security;
 
 
 -- ══════════════════════════════════════════════════════════════════════
---  验证：跑完这段应该看到五张表都返回 0 或更多
+--  验证：跑完这段应该看到每张表都返回 0 或更多
 -- ══════════════════════════════════════════════════════════════════════
 -- select count(*) as subscriptions_rows from public.subscriptions;
 -- select count(*) as notify_log_rows    from public.notify_log;
 -- select count(*) as user_settings_rows from public.user_settings;
 -- select count(*) as query_log_rows     from public.query_log;
 -- select count(*) as cron_log_rows      from public.cron_log;
+-- select count(*) as conversations_rows from public.agent_conversation;
 -- select count(*) as agent_run_rows     from public.agent_run;
 -- select count(*) as agent_step_rows    from public.agent_step;
