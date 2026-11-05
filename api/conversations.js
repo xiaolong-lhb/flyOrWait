@@ -37,13 +37,8 @@
  * 响应体遵循全局约定 { code, message, data }，见 src/api/index.js 顶部。
  */
 import { getSupabase } from './_supabase.js';
-
-/**
- * uuid 形状校验。
- * 与 api/_subscriptionOps.js 的 UUID_RE 同形，但本地写一份 ——
- * 不为了一个正则去 import 订阅模块，那会让「会话」和「订阅」无谓耦合。
- */
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+// 与 api/agent.js 共用同一份形状校验：两处各写一份，改一处忘一处就是静默不一致
+import { UUID_RE } from './_conversation.js';
 
 /**
  * 历史里「没答完」的统一说法。

@@ -67,9 +67,14 @@ export function resolveLLM(env = process.env) {
  *  系统提示
  * ══════════════════════════════════════════════════════════════════════
  *  这里只写「模型该遵守什么」，不写任何判据算法。
- *  「贵不贵」只能引用工具算好的字段，模型的任务是把结论讲成人话。 */
-export function buildSystemPrompt(today = todayForAgent()) {
-  return [
+ *  「贵不贵」只能引用工具算好的字段，模型的任务是把结论讲成人话。
+ *
+ *  ⚠️ 第 9 条只在**多轮**时出现（multiTurn）。单轮注入它等于提醒模型
+ *     「你有历史可引用」，反而诱导它在没有历史时也去编 —— 而且会让
+ *     评测集（单轮）跑在和线上（多轮）不一样的 prompt 上。
+ */
+export function buildSystemPrompt(today = todayForAgent(), { multiTurn = false } = {}) {
+  const rules = [
     '你是「该买机票吗」的助手，帮用户判断机票什么时候买、哪天走划算。',
     `今天是 ${today}（东八区）。所有日期都用 YYYY-MM-DD。`,
     '',
@@ -94,7 +99,23 @@ export function buildSystemPrompt(today = todayForAgent()) {
     '   find_cheapest_days / search_price_calendar / judge_one_day / search_flights /',
     '   compare_two_dates / create_subscription_draft 这些名字用户看不懂，写出来像报错日志。',
     '   要说「我查了 12-01 到 12-10 的票价」，不要说「用 find_cheapest_days 查」。',
-  ].join('\n');
+  ];
+
+  // ── 只在多轮追加 ──
+  // 这一条是多轮里最容易犯的错：上一轮答案里写着「11-27 是 1650」，
+  // 用户追问「那 11-28 呢」，模型顺口就说「差不多，也是 1650 左右」—— 但它这轮根本没查。
+  // 单轮时没有历史可引用，写进去只是噪音。
+  if (multiTurn) {
+    rules.push(
+      '9. 上面几轮的问答只用来理解「他在问什么」（比如「那 11-28 呢」指哪条航线、哪天），',
+      '   里面的价格、档位、最便宜的日子一律不能引用 —— 那是上一轮查的，此刻已经不代表现状。',
+      '   多少价格、什么档位、哪天最便宜，都必须本轮重新调工具查一遍。',
+      '   哪怕历史里明明写着「11-27 是 1650」，也不许说「差不多，也是 1650」。',
+      '   查不出来就直说查不出来，不要拿历史里的数字顶上。',
+    );
+  }
+
+  return rules.join('\n');
 }
 
 /* ══════════════════════════════════════════════════════════════════════
@@ -164,7 +185,7 @@ function summarize(value, max = 1500) {
  *  ★ 写日志失败**不能让整个 run 挂掉**：用户要的是答案，不是我们的记账。
  *    但也不能静默 —— 抛一条 db-warn 事件，让调用方决定怎么报。 */
 
-function createRecorder({ surface, model, onEvent }) {
+function createRecorder({ surface, model, ownerId = 'owner', conversationId = null, onEvent }) {
   let runId = null;
   /** 步号自增。不要用「轮数×2」去算 —— 一次回复带两个工具调用就会撞出两行同 seq。 */
   let seq = 0;
@@ -174,8 +195,12 @@ function createRecorder({ surface, model, onEvent }) {
       const { data, error } = await getSupabase()
         .from('agent_run')
         .insert({
-          owner_id: 'owner', // 项目暂不做登录，跟其它表一致
+          // ★ 必须和会话的 owner_id 同源：写死 'owner' 的话，将来接登录后
+          //   会话按用户分、run 全归 'owner'，历史接口按 owner 一过滤就查不到自己的消息
+          owner_id: ownerId,
           surface,
+          // null 是合法值（命令行 / 评测集没有会话），列允许空
+          conversation_id: conversationId,
           input_text: input,
           status: 'running',
           model,
@@ -229,6 +254,9 @@ function createRecorder({ surface, model, onEvent }) {
  *  @param {string}   [opts.surface]       这次 run 从哪来（chat / eval / cli），落进 agent_run.surface
  *  @param {object}   [opts.llm]           不传就按环境变量解析
  *  @param {number}   [opts.maxDurationMs]  总时长预算，线上要传小于平台的 60s
+ *  @param {Array}    [opts.history]       之前几轮的 [{role,content}]，拼在本次提问之前
+ *  @param {string}   [opts.conversationId] 所属会话，落库用；命令行/评测集不传
+ *  @param {string}   [opts.ownerId]       身份，默认 'owner'（与其它表一致）
  *  @param {Function} [opts.onEvent]       进度回调，不传就静默
  *  @returns {Promise<{runId,status,rounds,toolCalls,answer,failure,usage,elapsedMs,stats,model}>}
  */
@@ -237,6 +265,9 @@ export async function runAgent({
   surface = 'chat',
   llm = resolveLLM(),
   maxDurationMs = 120_000,
+  history = [],
+  conversationId = null,
+  ownerId = 'owner',
   onEvent = () => {},
 }) {
   if (!llm.apiKey) {
@@ -245,10 +276,14 @@ export async function runAgent({
 
   const ctx = createToolContext();
   const messages = [
-    { role: 'system', content: buildSystemPrompt() },
+    // 有历史才注入铁律 9 —— 单轮时它只是噪音，还会让评测集和线上跑在两条 prompt 上
+    { role: 'system', content: buildSystemPrompt(todayForAgent(), { multiTurn: history.length > 0 }) },
+    // ★ 历史是「对话背景」，不是「数据来源」。它只能帮模型听懂指代，
+    //   里面任何价格都不作数 —— 那条约束在提示词里，也在 _conversation.js 的注释里。
+    ...history,
     { role: 'user', content: question },
   ];
-  const recorder = createRecorder({ surface, model: llm.model, onEvent });
+  const recorder = createRecorder({ surface, model: llm.model, ownerId, conversationId, onEvent });
 
   await recorder.start(question);
 

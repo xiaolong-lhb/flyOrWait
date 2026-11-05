@@ -1,9 +1,16 @@
 /**
  * Agent 对话接口   POST /api/agent
  *
- *   请求：{ "question": "11月下旬从深圳去北京哪天便宜" }
+ *   请求：{ "question": "11月下旬从深圳去北京哪天便宜", "conversationId": "<可选 uuid>" }
  *   响应：{ code: 0, message: "ok",
- *           data: { runId, answer, model, status, rounds, toolCalls, elapsedMs, tokens } }
+ *           data: { runId, conversationId, answer, model, status,
+ *                   rounds, toolCalls, elapsedMs, tokens } }
+ *
+ *   不传 conversationId ⇒ 后端新建一个会话，把 id 一起返回；前端存下来，下一句带回来。
+ *   带了但不存在（或不属于当前身份）⇒ 404 / 4040，前端应当清掉本地 id、当成开新对话。
+ *   ★ 失败时**也回** conversationId（data 不是 null，是 { conversationId }）：
+ *     否则第一句就失败的话，用户重试会再建一个会话，同一个问题在列表里裂成两条。
+ *     body 形状没变（还是 {code,message,data}），只是失败时 data 有了内容。
  *
  * ══════════════════════════════════════════════════════════════════════
  *  这个文件只做三件事
@@ -55,6 +62,7 @@
  *  再插一行 query_log 只会让那个数字的口径变得说不清 —— 宁可分开看。
  */
 import { resolveLLM, runAgent } from './_agentRun.js';
+import { loadHistory, resolveConversation, touchConversation } from './_conversation.js';
 
 /** 用户原话上限。不是性能考虑：超长输入意味着这不是一句提问，别让模型替我们读文章。 */
 const MAX_QUESTION = 300;
@@ -101,6 +109,15 @@ export default async function handler(req, res) {
     return;
   }
 
+  // ── 身份（拦截器自动带，现在固定 'owner'）──
+  // 会话是按 owner_id 归属的，这里没有它就不知道该往哪个会话里写 run。
+  // 跟 api/conversations.js 同一个口径：接口不认识默认值，缺了就明确报错。
+  const ownerId = req.headers['x-owner-id'];
+  if (!ownerId) {
+    res.status(400).json({ code: 4000, message: '缺少身份标识（X-Owner-Id）', data: null });
+    return;
+  }
+
   // ── 入参校验：后端这份是唯一防线（前端那份只管体验）──
   const payload = req.body ?? {};
   const question = String(payload.question ?? '').trim();
@@ -127,6 +144,31 @@ export default async function handler(req, res) {
     return;
   }
 
+  // ── 会话：带了 id 就认领，没带就新建一个 ──
+  // 放在 key 检查之后：没配 key 时不该在库里留下一个永远没有消息的空会话。
+  const conv = await resolveConversation({
+    ownerId,
+    conversationId: payload.conversationId,
+    firstQuestion: question,
+  });
+  if (!conv.ok) {
+    // code 前三位就是 HTTP 码（4000→400 / 4040→404 / 5000→500）——全局约定本来就这么定的，
+    // 所以这里不必再维护一张映射表，省一条会漂的真理。
+    res
+      .status(Math.floor(conv.code / 10))
+      .json({ code: conv.code, message: conv.message, data: null });
+    return;
+  }
+
+  // 刚建的会话必然没有历史，省一次跨境查询（Vercel 到 Supabase 一来一回不便宜）
+  const history = conv.isNew
+    ? { messages: [], warning: null }
+    : await loadHistory({ ownerId, conversationId: conv.id });
+  if (history.warning) {
+    // 历史读不到就降级成单轮，不能让整轮挂掉：用户问的是新问题，历史只是帮他理解指代
+    console.warn('[agent] 历史读取失败，本轮按单轮处理：', history.warning);
+  }
+
   let result;
   try {
     result = await runAgent({
@@ -134,15 +176,26 @@ export default async function handler(req, res) {
       surface: 'chat',
       llm,
       maxDurationMs: BUDGET.totalMs,
+      history: history.messages,
+      conversationId: conv.id,
+      ownerId,
       onEvent: logEvent,
     });
   } catch (e) {
     // 走到这里说明是**编排层自己**抛了（数据库连不上、形态不对之类）
     // 完整堆栈只进日志：e.message 里可能有连接串、表名，对用户全是噪音
     console.error('[agent] 编排层异常：', e);
-    res.status(500).json({ code: 5000, message: SERVER_ERROR_MESSAGE, data: null });
+    res.status(500).json({
+      code: 5000,
+      message: SERVER_ERROR_MESSAGE,
+      data: { conversationId: conv.id },
+    });
     return;
   }
+
+  // 答得好不好都更新会话时间：用户确实在这里说了话，列表该把它顶到前面。
+  // touch 自己吞异常（失败只打日志），到这儿不会有 throw。
+  await touchConversation(conv.id);
 
   // ── 三种收尾，分别对应三种「用户该知道的事」──
   // 注意：run 已经完整落库了，即便这里回 5xx，runId 也能在库里查到。
@@ -151,7 +204,11 @@ export default async function handler(req, res) {
     // 「第 2 轮模型调用失败：模型接口 401：{...}」，后半段是上游原文，
     // 里面有 URL、状态码、偶尔还有 key 片段 —— 给日志，不给用户。
     console.error(`[agent] run ${result.runId} 模型侧失败：${result.failure}`);
-    res.status(502).json({ code: 5020, message: MODEL_ERROR_MESSAGE, data: null });
+    res.status(502).json({
+      code: 5020,
+      message: MODEL_ERROR_MESSAGE,
+      data: { conversationId: conv.id },
+    });
     return;
   }
   if (result.status === 'aborted') {
@@ -161,7 +218,7 @@ export default async function handler(req, res) {
     res.status(504).json({
       code: 5040,
       message: `这次没能答完：${result.failure}`,
-      data: null,
+      data: { conversationId: conv.id },
     });
     return;
   }
@@ -171,7 +228,7 @@ export default async function handler(req, res) {
     res.status(502).json({
       code: 5020,
       message: '模型返回了空回答，请重试一次',
-      data: null,
+      data: { conversationId: conv.id },
     });
     return;
   }
@@ -181,6 +238,7 @@ export default async function handler(req, res) {
     message: 'ok',
     data: {
       runId: result.runId,
+      conversationId: conv.id,
       answer: result.answer,
       model: result.model,
       status: result.status,
