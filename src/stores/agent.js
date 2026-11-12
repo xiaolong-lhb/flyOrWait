@@ -2,6 +2,7 @@ import { defineStore } from 'pinia';
 import { ref } from 'vue';
 
 import { http } from '../api/index.js';
+import { streamAgent } from '../api/agentStream.js';
 import { toBlocks } from '../utils/markdown.js';
 
 /**
@@ -16,6 +17,9 @@ import { toBlocks } from '../utils/markdown.js';
  *  答案正好接上。
  *
  *  这也是为什么这里**不用** AbortController：用户离开页面不代表不要这条回答了。
+ *  （流式请求内部确实有一个 AbortController，但它在 api/agentStream.js 里，
+ *   只由「45 秒一个字节都没来」触发，用来判定连接已死 —— 与组件生命周期无关，
+ *   不违反这条。切走页面照样会把这条回答收完。）
  *
  * ══════════════════════════════════════════════════════════════════════
  *  消息形状：块数组，不是 answer 字符串
@@ -165,12 +169,15 @@ export const useAgentStore = defineStore('agent', () => {
 
     messages.value.push({ id: newId(), role: 'user', text: question, state: 'ok' });
 
-    // 助手占位：先亮出 3 个点，别让用户对着空白怀疑页面死了
+    // 助手占位：先亮出 3 个点，别让用户对着空白怀疑页面死了。
+    // stage 是「后端说它现在在干什么」的一句话，全程可能改好几次；
+    // 空字符串表示还没收到任何阶段事件（此时气泡显示笼统文案 + 秒数）。
     messages.value.push({
       id: newId(),
       role: 'assistant',
       blocks: [],
       state: 'loading',
+      stage: '',
       error: '',
       elapsed: 0,
       retryable: false,
@@ -198,25 +205,47 @@ export const useAgentStore = defineStore('agent', () => {
       // 有会话就带上，让后端把这一轮接到同一段对话里；没有就让它建一个
       if (activeId.value) body.conversationId = activeId.value;
 
-      const data = await http.post('/agent', body);
+      // 逐条读事件。**判成败只看有没有拿到 done** ——
+      // 流式接口一旦写出第一个字节，状态码就永远是 200 了（见 api/agentStream.js）。
+      let done = null;
+      for await (const ev of streamAgent(body)) {
+        if (ev.type === 'meta') {
+          // ★ 第一个事件就带着会话 id。这里直接认下、**不刷列表**：
+          //   断线时可能根本收不到 done，早一刻拿到 id 就少一次「重试裂成两个会话」。
+          //   列表顺序留给 done 那一步刷（那时 updated_at 才真的变了）。
+          if (ev.conversationId && !activeId.value) activeId.value = ev.conversationId;
+        } else if (ev.type === 'stage') {
+          // 后端给的是人话（工具名 → 文案的映射在后端），原样显示，前端不认识任何工具名
+          reply.stage = ev.label || '';
+        } else if (ev.type === 'done') {
+          done = ev.data;
+        }
+      }
+
+      // 理论上走不到这儿：没收到 done 的话 streamAgent 自己会抛。
+      // 留这一条纯属防守 —— 宁可报错让用户重试，也不能把 loading 态永久卡住。
+      if (!done) throw new Error('没能收到完整回答，请重试');
+
       // 真正的块交给解析器，气泡只负责渲染块
-      reply.blocks = toBlocks(data?.answer ?? '');
+      reply.blocks = toBlocks(done.answer ?? '');
       reply.state = 'ok';
+      reply.stage = '';
       // 留个账，排查时不用去翻数据库
       reply.meta = {
-        runId: data?.runId,
-        rounds: data?.rounds,
-        toolCalls: data?.toolCalls,
-        elapsedMs: data?.elapsedMs,
+        runId: done.runId,
+        rounds: done.rounds,
+        toolCalls: done.toolCalls,
+        elapsedMs: done.elapsedMs,
       };
-      adoptConversation(data?.conversationId);
+      adoptConversation(done.conversationId);
     } catch (e) {
-      // 已被拦截器归一化成 { code, message, status, data }，message 可以直接展示
+      // 两条链路（axios 拦截器 / streamAgent）都已归一化成
+      // { code, message, status, data }，message 可以直接展示
       reply.state = 'error';
+      reply.stage = '';
       reply.error = e?.message || '没能拿到回答，请稍后重试';
       reply.retryable = RETRYABLE.has(e?.code);
-      // ★ 失败时后端也给了 conversationId（见 api/agent.js），接住它，
-      //   重试才不会再建一个会话
+      // ★ 失败时后端也给了 conversationId，接住它，重试才不会裂成两个会话
       adoptConversation(e?.data?.conversationId);
     } finally {
       stopTimer();
@@ -273,6 +302,7 @@ function fromServer(m) {
       ? { text: m.text }
       : { blocks: toBlocks(m.text ?? ''), meta: m.meta ?? null }),
     state: 'ok',
+    stage: '',
     error: '',
     elapsed: 0,
     retryable: false,

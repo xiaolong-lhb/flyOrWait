@@ -8,7 +8,12 @@
           <span class="sub">回答依据实时票价参考价</span>
         </div>
       </div>
-      <button class="ghost" type="button" :disabled="sending || !messages.length" @click="handleNew">
+      <button
+        class="ghost"
+        type="button"
+        :disabled="sending || !messages.length"
+        @click="handleNew"
+      >
         新对话
       </button>
     </header>
@@ -42,6 +47,7 @@
         :text="m.text"
         :blocks="m.blocks"
         :state="m.state"
+        :stage="m.stage"
         :error="m.error"
         :elapsed="m.elapsed"
         :retryable="m.retryable"

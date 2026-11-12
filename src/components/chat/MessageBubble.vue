@@ -9,10 +9,13 @@
     <div class="avatar" aria-hidden="true">✈</div>
 
     <div class="bubble bot-bubble">
-      <!-- ① 等待中：3 个点 + 真实秒数。不编造「正在调用日历」——前端不知道后端在干什么 -->
+      <!-- ① 等待中：3 个点 + 阶段 + 真实秒数。
+           stage 有值 = 后端在告诉我们它此刻在干什么（工具名 → 人话的映射在后端，
+           前端不认识任何工具名）；空串 = 连第一个阶段事件都还没到，此时只说笼统文案。
+           秒数一直留着：卡在 35 秒的日历请求上时，它是「没死」的唯一证据。 -->
       <div v-if="state === 'loading'" class="waiting">
         <span class="dots"><i></i><i></i><i></i></span>
-        <span class="wait-text">正在查实时票价，已等 {{ elapsed }} 秒</span>
+        <span class="wait-text">{{ stage || '正在查实时票价' }} · 已等 {{ elapsed }} 秒</span>
       </div>
 
       <!-- ② 失败：文案来自后端，前端一个字不翻译；能不能重试由父组件判断 -->
@@ -61,6 +64,8 @@ defineProps({
   error: { type: String, default: '' },
   /** 已等待秒数，仅 loading 态用 */
   elapsed: { type: Number, default: 0 },
+  /** 后端给的当前阶段文案（如「正在判断这一天的价格」），空串 = 还没收到任何阶段事件 */
+  stage: { type: String, default: '' },
   /** 是否给重试按钮：5000/5030 这类重试无意义的错误应为 false */
   retryable: { type: Boolean, default: false },
 });
