@@ -182,8 +182,15 @@ function makeResShim(res, statusRef) {
       res.writeHead(302, { Location: location });
       res.end();
     },
+    // ★ 必须和 json/send 一样先把头发出去，用的是「当时的 statusRef.code」。
+    //   原来这里只置 headSent、不 writeHead，而 Node 的 res.end() 也不会替你把
+    //   statusCode 带上去（那是垫片对象上的属性，不是真实响应上的）—— 于是
+    //   「直接赋 res.statusCode 再 res.end()」的 handler 在本地一律回 200。
+    //   唯一命中者是 api/agent-stream.js 的错误分支（405/400/500 全是真实码），
+    //   结果本地看到 200 + 错误体，会误判成接口 bug。实测对比过真 ServerResponse：
+    //   statusCode=405 + setHeader + end() → 405。
     end: (data) => {
-      statusRef.headSent = true;
+      sendHeadIfNeeded();
       res.end(data);
     },
   };
