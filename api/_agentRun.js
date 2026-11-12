@@ -25,7 +25,9 @@
  * ══════════════════════════════════════════════════════════════════════
  *  本文件**不打印任何东西**，只通过 onEvent 回调往外抛事件：
  *    { type: 'run-created', runId }
- *    { type: 'round',  round, wantsTools }
+ *    { type: 'llm-start', round }               ← 调用模型**之前**抛，填「正在想」的静默
+ *    { type: 'round',  round, wantsTools }      ← 模型返回**之后**抛
+ *    { type: 'tool-start', round, name, args }   ← 开始执行前抛，两端之间的等待靠它填
  *    { type: 'tool',   round, name, ok, code, message, durationMs, args }
  *    { type: 'llm-error', round, message }
  *    { type: 'db-warn', message }
@@ -308,6 +310,12 @@ export async function runAgent({
     }
 
     rounds += 1;
+
+    // ★ 必须在 callLLM **之前**抛。round 事件是模型返回之后才抛的，
+    //   所以单靠它表达不了「正在想」—— 中间那 2~5 秒在流式界面上是纯静默，
+    //   而纯静默正是这次改造要消灭的东西。跟 tool-start 同一个道理。
+    onEvent({ type: 'llm-start', round: rounds });
+
     const t0 = Date.now();
     let res;
     try {
@@ -354,6 +362,14 @@ export async function runAgent({
       }
 
       const tt = Date.now();
+
+      // ★ 「开始执行」必须在 runTool 之前抛，这是它存在的全部意义。
+      //   下面的 tool 事件是**执行完之后**才发的（带上耗时与结果），
+      //   两者之间是整段工具耗时 —— 日历最长 35s。只有 tool 事件的话，
+      //   前端在「模型决定要查」到「查完了」之间收不到任何字节，用户看到的是干等。
+      //   ⚠️ args 会带给前端，但它可能含邮箱等用户输入，展示层只许用 name。
+      onEvent({ type: 'tool-start', round: rounds, name, args });
+
       // 关键：同一个 ctx 传进去，缓存才活得下来（一次 run 只抓一次日历）
       const out = await runTool(name, args, ctx);
       const durationMs = Date.now() - tt;

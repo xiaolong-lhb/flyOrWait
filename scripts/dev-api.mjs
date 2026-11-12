@@ -109,31 +109,83 @@ function matchRoute(routes, relPath) {
   return null;
 }
 
-/** res 垫片：让 handler 里能照常写 res.status(200).json(...) */
+/**
+ * res 垫片：让 handler 里能照常写 res.status(200).json(...)
+ *
+ * ⚠️ 这个垫片必须逐渐贴近真正的 http.ServerResponse，否则会出现
+ *    「本地能跑、线上不能跑」或者反过来。SSE 接口（api/agent-stream.js）
+ *    用到的是 statusCode / write / flushHeaders / on('close') ——
+ *    缺任何一个，本地开发时前端调流式接口就直接 500（实测过：
+ *    `res.on is not a function`）。
+ */
 function makeResShim(res, statusRef) {
+  /**
+   * 响应头只能发一次。真实 ServerResponse 重复 writeHead 会抛
+   * ERR_HTTP_HEADERS_SENT —— 所以这里也用 headSent 挡住，
+   * 免得本地悄悄允许、线上才炸。
+   */
+  const sendHeadIfNeeded = () => {
+    if (statusRef.headSent) return;
+    statusRef.headSent = true;
+    // 不传 headers：让之前 setHeader 设的那些生效（Node 会合并）
+    res.writeHead(statusRef.code);
+  };
+
   return {
     status(code) {
       statusRef.code = code;
       return this;
     },
+    // 流式接口是直接赋值 statusCode 的（不经过 status()）。没有 getter/setter
+    // 的话，赋值只落在垫片对象的普通属性上，真实响应仍然按 statusRef.code 走。
+    get statusCode() {
+      return statusRef.code;
+    },
+    set statusCode(v) {
+      statusRef.code = v;
+    },
     setHeader: (k, v) => res.setHeader(k, v),
+    // 立刻把头刷出去。SSE 靠它让「连上了」这件事发生得早，而不是等到第一次 write。
+    flushHeaders() {
+      sendHeadIfNeeded();
+    },
+    // 流式写：只有第一次触发 writeHead，之后都是追加
+    write(chunk) {
+      sendHeadIfNeeded();
+      return res.write(chunk);
+    },
+    // 转发到真实 res 的事件（SSE 用 on('close') 判断客户端是否提前断开）
+    on(event, fn) {
+      res.on(event, fn);
+      return this;
+    },
     json(body) {
-      res.writeHead(statusRef.code, { 'Content-Type': 'application/json; charset=utf-8' });
+      if (!statusRef.headSent) {
+        res.writeHead(statusRef.code, { 'Content-Type': 'application/json; charset=utf-8' });
+        statusRef.headSent = true;
+      }
       res.end(JSON.stringify(body));
       return this;
     },
     send(body) {
       const isText = typeof body === 'string';
-      res.writeHead(statusRef.code, {
-        'Content-Type': isText ? 'text/plain; charset=utf-8' : 'application/json; charset=utf-8',
-      });
+      if (!statusRef.headSent) {
+        res.writeHead(statusRef.code, {
+          'Content-Type': isText ? 'text/plain; charset=utf-8' : 'application/json; charset=utf-8',
+        });
+        statusRef.headSent = true;
+      }
       res.end(isText ? body : JSON.stringify(body));
     },
     redirect(location) {
+      statusRef.headSent = true;
       res.writeHead(302, { Location: location });
       res.end();
     },
-    end: (data) => res.end(data),
+    end: (data) => {
+      statusRef.headSent = true;
+      res.end(data);
+    },
   };
 }
 

@@ -13,35 +13,26 @@
  *     body 形状没变（还是 {code,message,data}），只是失败时 data 有了内容。
  *
  * ══════════════════════════════════════════════════════════════════════
- *  这个文件只做三件事
+ *  这个文件只做两件事
  * ══════════════════════════════════════════════════════════════════════
- *   ① 校参（question 非空、别超长）→ ② 调 runAgent → ③ 按全局约定回包
+ *   ① 让 _agentPrepare 把请求整理干净 → ② 调 runAgent → ③ 按全局约定回包
  *
  * 循环本体在 api/_agentRun.js，工具在 api/_agentTools.js。
+ * 前置七步（方法/开关/身份/字数/Key/会话/历史）在 api/_agentPrepare.js，
+ * 和流式接口 api/agent-stream.js 共用同一份。
  * 这里**刻意不写任何业务逻辑**：命令行（scripts/agent-cli.mjs）和评测集
  * （scripts/agent-eval.mjs）跑的是同一份 runAgent，接口里再长一份逻辑，
  * 就又多了一个和上线代码不一致的真源。
  *
  * ══════════════════════════════════════════════════════════════════════
- *  时间预算：本接口唯一需要动脑的地方
+ *  时间预算：45s / 15s 两个数在 _agentPrepare.js 的 BUDGET 里
  * ══════════════════════════════════════════════════════════════════════
- *  三层超时由内到外逐层放大，中间这层就是本函数：
- *      单轮模型 15s  <  本函数预算 45s  <  Vercel maxDuration 60s  <  浏览器 65s
+ *  三层超时由内到外逐层放大：
+ *      单轮模型 15s  <  整轮预算 45s  <  Vercel maxDuration 60s  <  浏览器 65s
  *
- *  为什么预算要定在 45s 而不是 58s：
- *    Vercel 掐断是**硬断连接**，前端只会看到「网络异常」——我们自己准备好的
- *    那句中文报错永远没机会发出去。所以必须在平台上限之内**主动收尾**，
- *    哪怕收尾的结论是「这次没答完」。
- *
- *  正常一问的耗时拼起来（实测过的量级）：
- *    模型第 1 轮 2~5s（决定调哪个工具）+ 日历 0~35s + 末轮 2~5s ≈ 40s 以内。
- *
- *  ⚠️ 已知残余风险，写在明处，不假装没有：
- *    预算是**轮间**检查的，不是每次 I/O 之前检查的。若模型在拿到日历之后
- *    又要查一条**不同航线**（同航线有缓存救得了、不同航线救不了），
- *    那一轮可能在 45s 之后再加一次 35s 的日历 ⇒ 越过 60s 被平台掐断。
- *    概率低但存在。彻底解决要把 deadline 穿透到工具层（每次调用只取剩余预算），
- *    那要改 _agentRun + _agentTools 两个文件，不在本次改动范围。
+ *  ⚠️ 为什么整轮必须是 45s 而不是贴着 58s、以及「轮间检查」这个已知残余风险，
+ *     完整推导写在 _agentPrepare.js 的 BUDGET 上方。不在这里重复，
+ *     是因为流式接口用的是同一组数 —— 说明写两遍，改的时候就只会改到一遍。
  *
  * ══════════════════════════════════════════════════════════════════════
  *  没有鉴权 —— 这一点必须说清，不能装作有
@@ -61,113 +52,37 @@
  *  agent 的每次 run 已经完整落在 agent_run / agent_step 里，
  *  再插一行 query_log 只会让那个数字的口径变得说不清 —— 宁可分开看。
  */
-import { resolveLLM, runAgent } from './_agentRun.js';
-import { loadHistory, resolveConversation, touchConversation } from './_conversation.js';
-
-/** 用户原话上限。不是性能考虑：超长输入意味着这不是一句提问，别让模型替我们读文章。 */
-const MAX_QUESTION = 300;
-
-const BUDGET = {
-  /** 整轮预算，必须明显小于 vercel.json 的 maxDuration(60s)，见文件头 */
-  totalMs: 45_000,
-  /** 单轮模型调用。15s 对 flash 这种模型足够；设大了会把日历的时间挤掉 */
-  llmMs: 15_000,
-};
-
-/* ══════════════════════════════════════════════════════════════════════
- *  错误文案：对外说人话，对内留细节
- * ══════════════════════════════════════════════════════════════════════
- *  项目约定是「message 可以直接展示给用户」，所以它**不能**夹带实现细节。
- *  判断标准只有一条：**用户看到这句话，能不能做点什么**。
- *
- *    能改的（question 为空 / 超长）        → 原话直出，还要说清怎么改
- *    改不了但重试有用（模型 429、超时）    → 说「稍后再试」，给重试按钮
- *    改不了且重试也没用（缺 key、代码崩了）→ 一句统一话，细节全进日志
- *
- *  「后端缺少环境变量 DEEPSEEK_API_KEY」这种话，用户没有那个变量，告诉他
- *  变量名除了漏实现细节之外毫无用处。真正的原因写在 console.error 里 ——
- *  线上出这种事，`vercel logs` 搜 DEEPSEEK_API_KEY 就能定位。
- */
-const SERVER_ERROR_MESSAGE = '服务暂时不可用，请稍后再试';
-const MODEL_ERROR_MESSAGE = '模型服务暂时不可用，请稍后再试';
+import { runAgent } from './_agentRun.js';
+import { touchConversation } from './_conversation.js';
+// 事件的日志格式与 api/agent-stream.js 共用同一份（_agentLog.js）。
+// 别名成 logEvent 是为了让 onEvent 那行和以前一模一样 —— 这次改动的目的
+// 只是把实现搬走，不是改调用方式。
+import { logAgentEvent as logEvent } from './_agentLog.js';
+// 方法 / 开关 / 身份 / 字数 / Key / 会话 / 历史 这七步全部在 _agentPrepare.js。
+// 流式接口 api/agent-stream.js 用的是同一份 —— 两处各写一遍就一定会漂。
+// 时间预算（45s / 15s）和两句对外错误文案也从那里取，不再在本文件维护。
+import {
+  BUDGET,
+  MODEL_ERROR_MESSAGE,
+  SERVER_ERROR_MESSAGE,
+  prepareAgentRequest,
+} from './_agentPrepare.js';
 
 export default async function handler(req, res) {
   res.setHeader('Cache-Control', 'no-store');
 
-  if (req.method !== 'POST') {
-    res.status(405).json({ code: 4050, message: `不支持的方法：${req.method}`, data: null });
-    return;
-  }
-
-  // 紧急刹车：账单或模型出问题时，改环境变量比重发一版代码快
-  if (process.env.AGENT_DISABLED === '1') {
-    res.status(503).json({
-      code: 5030,
-      message: 'Agent 功能已临时关闭',
-      data: null,
-    });
-    return;
-  }
-
-  // ── 身份（拦截器自动带，现在固定 'owner'）──
-  // 会话是按 owner_id 归属的，这里没有它就不知道该往哪个会话里写 run。
-  // 跟 api/conversations.js 同一个口径：接口不认识默认值，缺了就明确报错。
-  const ownerId = req.headers['x-owner-id'];
-  if (!ownerId) {
-    res.status(400).json({ code: 4000, message: '缺少身份标识（X-Owner-Id）', data: null });
-    return;
-  }
-
-  // ── 入参校验：后端这份是唯一防线（前端那份只管体验）──
-  const payload = req.body ?? {};
-  const question = String(payload.question ?? '').trim();
-
-  if (!question) {
-    res.status(400).json({ code: 4000, message: 'question 不能为空', data: null });
-    return;
-  }
-  if (question.length > MAX_QUESTION) {
-    res.status(400).json({
-      code: 4000,
-      message: `question 最多 ${MAX_QUESTION} 字，收到 ${question.length} 字`,
-      data: null,
-    });
-    return;
-  }
-
-  const llm = { ...resolveLLM(), timeoutMs: BUDGET.llmMs };
-  if (!llm.apiKey) {
-    // 配置缺失回 500（我们自己的锅），不是 502（外部源的锅）—— 跟 api/result.js 同口径
-    // 这条日志不是可选的：对外已经被抹成一句通用提示，这里是**唯一**知道真因的地方
-    console.error('[agent] 配置缺失：未设置 DEEPSEEK_API_KEY，无法调用模型');
-    res.status(500).json({ code: 5000, message: SERVER_ERROR_MESSAGE, data: null });
-    return;
-  }
-
-  // ── 会话：带了 id 就认领，没带就新建一个 ──
-  // 放在 key 检查之后：没配 key 时不该在库里留下一个永远没有消息的空会话。
-  const conv = await resolveConversation({
-    ownerId,
-    conversationId: payload.conversationId,
-    firstQuestion: question,
-  });
-  if (!conv.ok) {
-    // code 前三位就是 HTTP 码（4000→400 / 4040→404 / 5000→500）——全局约定本来就这么定的，
-    // 所以这里不必再维护一张映射表，省一条会漂的真理。
+  // ── 前置七步：方法 / 开关 / 身份 / 字数 / Key / 会话 / 历史 ──
+  // 全部交给 _agentPrepare.js。本文件只负责「拿到干净的 question 之后怎么跑」。
+  const prep = await prepareAgentRequest(req);
+  if (!prep.ok) {
+    // code 前三位就是 HTTP 码（4000→400 / 4040→404 / 4050→405 / 5000→500 / 5030→503）——
+    // 全局约定本来就这么定的，所以这里不必再维护一张会漂的映射表。
     res
-      .status(Math.floor(conv.code / 10))
-      .json({ code: conv.code, message: conv.message, data: null });
+      .status(Math.floor(prep.code / 10))
+      .json({ code: prep.code, message: prep.message, data: null });
     return;
   }
-
-  // 刚建的会话必然没有历史，省一次跨境查询（Vercel 到 Supabase 一来一回不便宜）
-  const history = conv.isNew
-    ? { messages: [], warning: null }
-    : await loadHistory({ ownerId, conversationId: conv.id });
-  if (history.warning) {
-    // 历史读不到就降级成单轮，不能让整轮挂掉：用户问的是新问题，历史只是帮他理解指代
-    console.warn('[agent] 历史读取失败，本轮按单轮处理：', history.warning);
-  }
+  const { ownerId, question, llm, conv, history } = prep;
 
   let result;
   try {
@@ -255,34 +170,14 @@ export default async function handler(req, res) {
   });
 }
 
-/**
- * 进度回调只写日志，不回给前端。
+/* ══════════════════════════════════════════════════════════════════════
+ *  进度事件的日志实现搬到了 api/_agentLog.js
+ * ══════════════════════════════════════════════════════════════════════
+ *  本文件与 api/agent-stream.js 跑的是同一个 runAgent，事件序列完全一样。
+ *  日志格式如果各留一份，同一次 run 在两种接口下打出来的行会长得不一样，
+ *  排查时得先分清用户用的是哪个接口才能读懂日志。
  *
- * 为什么值得留：线上出问题时，`vercel logs` 里这几行是**唯一**能立刻看出
- * 「它第几轮调了哪个工具、花了多久、失败在哪个工具」的东西 ——
- * 库里虽然有 agent_step，但那是要连数据库才能看的。
- *
- * ⚠️ 这里刻意不打 args 全文：里面可能有邮箱，日志是比数据库更容易被翻看的地方。
+ *  那里还留着原来那段「为什么值得留 / 为什么不打 args」的理由，不在这里重复 ——
+ *  同一份理由写两遍，改的时候必然只改到一处。
  */
-function logEvent(ev) {
-  switch (ev.type) {
-    case 'round':
-      console.log(`[agent] 第 ${ev.round} 轮：${ev.wantsTools ? `要调 ${ev.wantsTools} 个工具` : '给出回答'}`);
-      break;
-    case 'tool':
-      console.log(
-        `[agent]   ${ev.name} ${ev.ok ? 'ok' : `✗ ${ev.code}`} ${ev.durationMs}ms` +
-          (ev.ok ? '' : ` — ${ev.message}`),
-      );
-      break;
-    case 'llm-error':
-      console.error(`[agent] 第 ${ev.round} 轮模型失败：${ev.message}`);
-      break;
-    case 'db-warn':
-      // 记账失败不影响回答，但必须留痕 —— 否则「为什么库里缺了这次 run」永远查不清
-      console.warn(`[agent] 落库异常：${ev.message}`);
-      break;
-    default:
-      break;
-  }
-}
+
