@@ -60,10 +60,22 @@ export function resolveLLM(env = process.env) {
     model: env.DEEPSEEK_MODEL || 'deepseek-chat',
     apiKey: env.DEEPSEEK_API_KEY || '',
     /**
-     * 单次模型调用超时。默认 60s 是 CLI 的宽松值；
-     * 线上接口必须传更小的值（见 api/agent.js），否则一轮就把总预算吃光。
+     * 单次模型调用的总上限。默认 60s 是 CLI 的宽松值；
+     * 线上接口必须传更小的值（见 api/_agentPrepare.js 的 BUDGET），否则一轮就把总预算吃光。
      */
     timeoutMs: Number(env.AGENT_LLM_TIMEOUT_MS) || 60_000,
+    /**
+     * 首块（第一个数据块）等的上限，**从请求发出算起**，包含等响应头的那段。
+     *
+     * 为什么要跟 timeoutMs 分开：流式之后「慢」有两种完全不同的含义 ——
+     *   a) 一个字都不吐（连响应头都没回 / 上游卡住）→ 这是故障，应该尽早砍
+     *   b) 在慢慢吐，只是没吐完         → 这是正常，砍掉就是误伤
+     * 一个数没法同时表达这两件事：定小了误伤 b，定大了 a 要白等。
+     *
+     * 实测首块 556~1284ms（10 次，deepseek 带工具），定 10s 是留了近 10 倍余量；
+     * 超过 10s 还没动静，基本可以确定不是「慢」而是「挂」。
+     */
+    firstTokenMs: Number(env.AGENT_LLM_FIRST_TOKEN_MS) || 10_000,
   };
 }
 
@@ -157,7 +169,7 @@ function mergeToolCallDelta(slots, deltas) {
  * 返回的 message 与「不开 stream 时拿到的 message」逐字段对齐，
  * 这样循环体、CLI、评测集、旧接口全都不用改 —— 这是这次改造的核心约束。
  */
-async function readChatStream(res, { onDelta, timeoutMs }) {
+async function readChatStream(res, { onDelta, onFirstChunk }) {
   if (!res.body) throw new Error('模型响应没有 body，无法读取流');
 
   const reader = res.body.getReader();
@@ -168,54 +180,52 @@ async function readChatStream(res, { onDelta, timeoutMs }) {
   let sawChunk = false;
   const slots = [];
 
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
+  // 这里**不翻译任何错误**，包括超时：读流层分不清是「首块没来」还是「吐到一半停了」，
+  // 那两种要说给用户听的话不一样。统一交给 callLLM，只有那里知道是哪个计时器到的点。
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
 
-      // 去掉 \r：SSE 允许 CRLF，但 JSON 里不可能出现裸 CR（换行是转义的），
-      // 留着它会让 '\n\n' 的切分在 CRLF 服务端上完全失效。
-      buf += dec.decode(value, { stream: true }).replace(/\r/g, '');
+    // 去掉 \r：SSE 允许 CRLF，但 JSON 里不可能出现裸 CR（换行是转义的），
+    // 留着它会让 '\n\n' 的切分在 CRLF 服务端上完全失效。
+    buf += dec.decode(value, { stream: true }).replace(/\r/g, '');
 
-      let cut;
-      while ((cut = buf.indexOf('\n\n')) >= 0) {
-        const block = buf.slice(0, cut);
-        buf = buf.slice(cut + 2);
+    let cut;
+    while ((cut = buf.indexOf('\n\n')) >= 0) {
+      const block = buf.slice(0, cut);
+      buf = buf.slice(cut + 2);
 
-        for (const line of block.split('\n')) {
-          if (!line.startsWith('data:')) continue; // 兼容 ': ping' 心跳与 event: 行
-          const raw = line.slice(5).trim();
-          if (!raw || raw === '[DONE]') continue;
+      for (const line of block.split('\n')) {
+        if (!line.startsWith('data:')) continue; // 兼容 ': ping' 心跳与 event: 行
+        const raw = line.slice(5).trim();
+        if (!raw || raw === '[DONE]') continue;
 
-          let j;
-          try {
-            j = JSON.parse(raw);
-          } catch {
-            continue; // 单个坏块不能毁掉整条流
-          }
-          if (j.error) throw new Error(`模型流内报错：${JSON.stringify(j.error).slice(0, 300)}`);
-
-          sawChunk = true;
-          // include_usage 时，最后一块是 choices:[] + 单独一个 usage
-          if (j.usage) usage = j.usage;
-
-          const d = j.choices?.[0]?.delta;
-          if (!d) continue;
-
-          if (typeof d.content === 'string' && d.content) {
-            content += d.content;
-            onDelta?.(d.content);
-          }
-          mergeToolCallDelta(slots, d.tool_calls);
+        let j;
+        try {
+          j = JSON.parse(raw);
+        } catch {
+          continue; // 单个坏块不能毁掉整条流
         }
+        if (j.error) throw new Error(`模型流内报错：${JSON.stringify(j.error).slice(0, 300)}`);
+
+        if (!sawChunk) {
+          sawChunk = true;
+          // 只报第一次：调用方靠它把「首块计时器」停掉，之后转由总时长兜底
+          onFirstChunk?.();
+        }
+        // include_usage 时，最后一块是 choices:[] + 单独一个 usage
+        if (j.usage) usage = j.usage;
+
+        const d = j.choices?.[0]?.delta;
+        if (!d) continue;
+
+        if (typeof d.content === 'string' && d.content) {
+          content += d.content;
+          onDelta?.(d.content);
+        }
+        mergeToolCallDelta(slots, d.tool_calls);
       }
     }
-  } catch (err) {
-    // AbortSignal.timeout 到点会在 read() 上抛，原文是英文且看不出是「哪一层」超时
-    if (err?.name === 'TimeoutError' || err?.name === 'AbortError') {
-      throw new Error(`模型接口超时（${Math.round(timeoutMs / 1000)}s 内未完成）`, { cause: err });
-    }
-    throw err;
   }
 
   if (!sawChunk) throw new Error('模型流里没有收到任何数据块');
@@ -251,60 +261,107 @@ async function readChatStream(res, { onDelta, timeoutMs }) {
  * @returns {Promise<{message: object, usage: object|null}>}
  */
 export async function callLLM(messages, llm, onDelta) {
-  const res = await fetch(`${llm.baseUrl}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${llm.apiKey}`,
-    },
-    body: JSON.stringify({
-      model: llm.model,
-      messages,
-      tools: TOOLS,
-      tool_choice: 'auto',
-      temperature: 0.2, // 判断类任务要稳，不要发挥
-      stream: true,
-      // 开了流之后 usage 默认不返回，不加这个字段 token 统计会变成 0
-      stream_options: { include_usage: true },
-    }),
-    // ★ 这里仍是「整轮超时」。流式下它会把健康的慢流一起砍掉，
-    //   所以下一步要拆成「首 token 超时 + 整轮预算」—— 本轮先保持与改造前同语义。
-    signal: AbortSignal.timeout(llm.timeoutMs),
-  });
+  const roundMs = llm.timeoutMs;
+  // 首块上限不能比总上限还大（CLI 里两个都可能配成 60s），取 min 才不会被大的那个盖住
+  const firstMs = Math.min(llm.firstTokenMs ?? 10_000, roundMs);
 
-  if (!res.ok) {
-    // 出错时不会回流，先读成文本才能看到上游到底说了什么
-    throw new Error(`模型接口 ${res.status}：${(await res.text()).slice(0, 300)}`);
-  }
+  const ctrl = new AbortController();
+  /** null | 'first' | 'round' —— 哪个计时器到的点，决定最后对用户说哪句话 */
+  let timedOut = null;
+  let gotFirstChunk = false;
 
-  // 兜底：万一换的厂商不认 stream，会直接回一整段 JSON。此时走老路，
-  // 不至于整个 agent 挂掉。（顺带一句：若某厂商因为 stream_options 报 400，
-  // 错误原文会带着它的提示，把上面那个字段去掉即可。）
-  const ctype = res.headers.get('content-type') || '';
-  if (!ctype.includes('text/event-stream')) {
-    const text = await res.text();
-    let body;
-    try {
-      body = JSON.parse(text);
-    } catch {
-      throw new Error(`模型返回不是 JSON：${text.slice(0, 300)}`);
+  // ⚠️ 这两个 timer 必须清掉。Node 里活动的 setTimeout 会拖住事件循环，
+  //   在 Vercel 上表现为「响应已经结束、函数还不退出」，白白计费到超时。
+  const firstTimer = setTimeout(() => {
+    // 首块已经到过就不用再管了，让总时长去兜底
+    if (!gotFirstChunk) {
+      timedOut = 'first';
+      ctrl.abort();
     }
-    const message = body?.choices?.[0]?.message;
-    if (!message) throw new Error(`模型返回里没有 message：${text.slice(0, 300)}`);
-    return {
-      message: {
-        role: 'assistant',
-        content: message.content ?? '',
-        ...(message.tool_calls?.length ? { tool_calls: message.tool_calls } : {}),
-      },
-      usage: body.usage ?? null,
-    };
-  }
+  }, firstMs);
+  const roundTimer = setTimeout(() => {
+    timedOut = 'round';
+    ctrl.abort();
+  }, roundMs);
 
-  return readChatStream(res, { onDelta, timeoutMs: llm.timeoutMs });
+  try {
+    const res = await fetch(`${llm.baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${llm.apiKey}`,
+      },
+      body: JSON.stringify({
+        model: llm.model,
+        messages,
+        tools: TOOLS,
+        tool_choice: 'auto',
+        temperature: 0.2, // 判断类任务要稳，不要发挥
+        stream: true,
+        // 开了流之后 usage 默认不返回，不加这个字段 token 统计会变成 0
+        stream_options: { include_usage: true },
+      }),
+      signal: ctrl.signal,
+    });
+
+    if (!res.ok) {
+      // 出错时不会回流，先读成文本才能看到上游到底说了什么
+      throw new Error(`模型接口 ${res.status}：${(await res.text()).slice(0, 300)}`);
+    }
+
+    // 兜底：万一换的厂商不认 stream，会直接回一整段 JSON。此时走老路，
+    // 不至于整个 agent 挂掉。（顺带一句：若某厂商因为 stream_options 报 400，
+    // 错误原文会带着它的提示，把上面那个字段去掉即可。）
+    const ctype = res.headers.get('content-type') || '';
+    if (!ctype.includes('text/event-stream')) {
+      const text = await res.text();
+      let body;
+      try {
+        body = JSON.parse(text);
+      } catch {
+        throw new Error(`模型返回不是 JSON：${text.slice(0, 300)}`);
+      }
+      const message = body?.choices?.[0]?.message;
+      if (!message) throw new Error(`模型返回里没有 message：${text.slice(0, 300)}`);
+      return {
+        message: {
+          role: 'assistant',
+          content: message.content ?? '',
+          ...(message.tool_calls?.length ? { tool_calls: message.tool_calls } : {}),
+        },
+        usage: body.usage ?? null,
+      };
+    }
+
+    return await readChatStream(res, {
+      onDelta,
+      onFirstChunk: () => {
+        gotFirstChunk = true;
+        clearTimeout(firstTimer); // 首块到了就别再按「首块」判它，交给总时长
+      },
+    });
+  } catch (err) {
+    // 只翻译「我们自己 abort 出来的」那种错。上游真报错（500、流内 error、非 JSON）
+    // 原样往上抛 —— 否则「余额不足」会被说成「超时」，排查方向直接跑偏。
+    if (timedOut === 'first') {
+      throw new Error(`模型接口 ${fmtMs(firstMs)} 内没有返回任何数据`, { cause: err });
+    }
+    if (timedOut === 'round') {
+      throw new Error(`模型接口超时（${fmtMs(roundMs)} 内未完成）`, { cause: err });
+    }
+    throw err;
+  } finally {
+    clearTimeout(firstTimer);
+    clearTimeout(roundTimer);
+  }
 }
 
 /* ── 小工具 ─────────────────────────────────────────────────────────── */
+
+/** 300 → '300ms'，10000 → '10s'。直接 Math.round(ms/1000) 会把 300ms 说成「0s」 */
+function fmtMs(ms) {
+  return ms >= 1000 ? `${Math.round(ms / 1000)}s` : `${ms}ms`;
+}
 
 /**
  * 落库前把结果裁一刀。

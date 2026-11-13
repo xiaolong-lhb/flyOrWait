@@ -264,6 +264,53 @@ handler = (req, res) => {
   const ms = Date.now() - t0;
   if (msg.includes('模型接口超时') && ms < 2000) ok(`卡流超时：${ms}ms 抛中文错误`);
   else bad('卡流超时：抛中文错误', `用时 ${ms}ms，message=${msg}`);
+  // 首块已经到过 ⇒ 不能说成「没有返回任何数据」，否则查日志的人会跑去查网络
+  eq('卡流超时：不误报成「首块未返回」', msg.includes('没有返回任何数据'), false);
+}
+
+/* ══ 10. 一个字节都不回 → 首块超时，比分总时长更早断 ═════════════ */
+handler = (req, res) => {
+  res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+  res.flushHeaders(); // 头回了、数据一个字没有：最像「上游挂住」
+};
+{
+  const t0 = Date.now();
+  let msg = '';
+  try {
+    await callLLM(messages, { ...llm, timeoutMs: 5000, firstTokenMs: 300 });
+  } catch (e) {
+    msg = e.message;
+  }
+  const ms = Date.now() - t0;
+  // 关键不是「有报错」，而是**远早于 timeoutMs 就断**：这正是不拆两个数的价值
+  const fast = ms >= 250 && ms < 1500;
+  if (msg.includes('没有返回任何数据') && fast) ok(`首块超时：${ms}ms 就断（没等满 5000ms）`);
+  else bad('首块超时：尽早断', `用时 ${ms}ms，message=${msg}`);
+}
+
+/* ══ 11. ★ 慢但健康的流，不能被首块超时误伤 ═══════════════════════ */
+handler = (req, res) => {
+  // 头也慢（100ms 才回），首块到了之后整条流还要 450ms ——
+  // 总耗时（~550ms）已超过 firstTokenMs(300)，但没超过 timeoutMs(4000)，必须读完。
+  // 这条就是在守「拆完之后不能把健康的慢流砍掉」。
+  setTimeout(() => {
+    streamOut(
+      res,
+      ['A', 'B', 'C', 'D'].map((t) => chunk({ choices: [{ delta: { content: t } }] })),
+      150,
+    );
+  }, 100);
+};
+{
+  let r = null;
+  let msg = '';
+  try {
+    r = await callLLM(messages, { ...llm, timeoutMs: 4000, firstTokenMs: 300 });
+  } catch (e) {
+    msg = e.message;
+  }
+  eq('慢流不误伤：整条流长于首块上限也能读完', r?.message?.content, 'ABCD');
+  if (msg) bad('慢流不误伤：不该抛错', `抛了：${msg}`);
 }
 
 srv.close();
