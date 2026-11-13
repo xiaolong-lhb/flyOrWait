@@ -9,6 +9,7 @@
     "dev:api:live": "node --watch-path=api --watch-path=scripts scripts/dev-api.mjs --live",
     "probe:apify": "node scripts/probe-apify-calendar.mjs",
     "probe:apify:coverage": "node scripts/probe-apify-coverage.mjs",
+    "probe:callllm": "node scripts/probe-callllm.mjs",
     "build": "vite build",
     "preview": "vite preview",
     "lint": "run-s \"lint:*\"",

@@ -26,6 +26,8 @@
  *  本文件**不打印任何东西**，只通过 onEvent 回调往外抛事件：
  *    { type: 'run-created', runId }
  *    { type: 'llm-start', round }               ← 调用模型**之前**抛，填「正在想」的静默
+ *    { type: 'delta',  round, text }            ← 答案正文的一个分片（v2，逐字流用）
+ *    { type: 'retract', round }                 ← 这一轮其实要工具，把上面的 delta 撤回
  *    { type: 'round',  round, wantsTools }      ← 模型返回**之后**抛
  *    { type: 'tool-start', round, name, args }   ← 开始执行前抛，两端之间的等待靠它填
  *    { type: 'tool',   round, name, ok, code, message, durationMs, args }
@@ -125,10 +127,130 @@ export function buildSystemPrompt(today = todayForAgent(), { multiTurn = false }
  * ══════════════════════════════════════════════════════════════════════ */
 
 /**
+ * 把一个 tool_calls 分片并进槽位（按 index）。
+ *
+ * ⚠️ 这是流式改造里唯一「写错就 100% 崩」的地方。OpenAI 兼容格式下：
+ *    · id  在第一块出现，且是**完整值**
+ *    · name 在第一块出现，通常也是完整值（但个别厂商会重发）
+ *    · arguments 是被切成 N 段的 JSON 字符串，只能靠拼接还原
+ * 所以 name 用「前缀判断」而不是无脑 +=：重发时跳过，真分片时补上。
+ * 无脑 += 遇到重发的厂商会变成 judge_one_dayjudge_one_day → 工具找不到 → 整轮废掉。
+ */
+function mergeToolCallDelta(slots, deltas) {
+  for (const tc of deltas ?? []) {
+    const i = tc.index ?? 0;
+    const slot = slots[i] ?? (slots[i] = { id: '', name: '', args: '' });
+    if (tc.id && !slot.id) slot.id = tc.id;
+    const name = tc.function?.name;
+    if (name) {
+      if (!slot.name) slot.name = name;
+      else if (!slot.name.startsWith(name)) slot.name += name;
+    }
+    const args = tc.function?.arguments;
+    if (args) slot.args += args;
+  }
+}
+
+/**
+ * 读一条 chat/completions 的流，拼回非流式的那个形状。
+ *
+ * 返回的 message 与「不开 stream 时拿到的 message」逐字段对齐，
+ * 这样循环体、CLI、评测集、旧接口全都不用改 —— 这是这次改造的核心约束。
+ */
+async function readChatStream(res, { onDelta, timeoutMs }) {
+  if (!res.body) throw new Error('模型响应没有 body，无法读取流');
+
+  const reader = res.body.getReader();
+  const dec = new TextDecoder();
+  let buf = '';
+  let content = '';
+  let usage = null;
+  let sawChunk = false;
+  const slots = [];
+
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      // 去掉 \r：SSE 允许 CRLF，但 JSON 里不可能出现裸 CR（换行是转义的），
+      // 留着它会让 '\n\n' 的切分在 CRLF 服务端上完全失效。
+      buf += dec.decode(value, { stream: true }).replace(/\r/g, '');
+
+      let cut;
+      while ((cut = buf.indexOf('\n\n')) >= 0) {
+        const block = buf.slice(0, cut);
+        buf = buf.slice(cut + 2);
+
+        for (const line of block.split('\n')) {
+          if (!line.startsWith('data:')) continue; // 兼容 ': ping' 心跳与 event: 行
+          const raw = line.slice(5).trim();
+          if (!raw || raw === '[DONE]') continue;
+
+          let j;
+          try {
+            j = JSON.parse(raw);
+          } catch {
+            continue; // 单个坏块不能毁掉整条流
+          }
+          if (j.error) throw new Error(`模型流内报错：${JSON.stringify(j.error).slice(0, 300)}`);
+
+          sawChunk = true;
+          // include_usage 时，最后一块是 choices:[] + 单独一个 usage
+          if (j.usage) usage = j.usage;
+
+          const d = j.choices?.[0]?.delta;
+          if (!d) continue;
+
+          if (typeof d.content === 'string' && d.content) {
+            content += d.content;
+            onDelta?.(d.content);
+          }
+          mergeToolCallDelta(slots, d.tool_calls);
+        }
+      }
+    }
+  } catch (err) {
+    // AbortSignal.timeout 到点会在 read() 上抛，原文是英文且看不出是「哪一层」超时
+    if (err?.name === 'TimeoutError' || err?.name === 'AbortError') {
+      throw new Error(`模型接口超时（${Math.round(timeoutMs / 1000)}s 内未完成）`, { cause: err });
+    }
+    throw err;
+  }
+
+  if (!sawChunk) throw new Error('模型流里没有收到任何数据块');
+
+  const tool_calls = slots
+    .filter((s) => s && (s.name || s.args))
+    .map((s) => ({
+      // 正常情况必有 id；万一缺了也补一个，否则下一轮把 tool 结果回传会被接口拒
+      id: s.id || `call_${Math.random().toString(36).slice(2, 10)}`,
+      type: 'function',
+      function: { name: s.name, arguments: s.args || '{}' },
+    }));
+
+  return {
+    // reasoning_content 一律丢弃：塞回下一次请求会被接口拒（同非流式那份注释）
+    message: {
+      role: 'assistant',
+      content,
+      ...(tool_calls.length ? { tool_calls } : {}),
+    },
+    usage,
+  };
+}
+
+/**
  * 真模型（DeepSeek / OpenAI 兼容格式）。
+ *
+ * v2 起走流式：模型本来就是一个个 token 吐的，不开 stream 等于让厂商替我们
+ * 攒齐再给，首字必然等到最后。但**对下游完全透明** —— 返回值形状与改造前一致，
+ * 多出来的只有可选的第 3 个参数 onDelta(text)，用来把答案文字一块块转出去。
+ *
+ * @param {Function} [onDelta] 收到一段答案文字就调一次（工具轮的 arguments 碎片不走这里）
  * @returns {Promise<{message: object, usage: object|null}>}
  */
-async function callLLM(messages, llm) {
+export async function callLLM(messages, llm, onDelta) {
   const res = await fetch(`${llm.baseUrl}/chat/completions`, {
     method: 'POST',
     headers: {
@@ -141,29 +263,45 @@ async function callLLM(messages, llm) {
       tools: TOOLS,
       tool_choice: 'auto',
       temperature: 0.2, // 判断类任务要稳，不要发挥
+      stream: true,
+      // 开了流之后 usage 默认不返回，不加这个字段 token 统计会变成 0
+      stream_options: { include_usage: true },
     }),
+    // ★ 这里仍是「整轮超时」。流式下它会把健康的慢流一起砍掉，
+    //   所以下一步要拆成「首 token 超时 + 整轮预算」—— 本轮先保持与改造前同语义。
     signal: AbortSignal.timeout(llm.timeoutMs),
   });
 
-  const text = await res.text();
   if (!res.ok) {
-    throw new Error(`模型接口 ${res.status}：${text.slice(0, 300)}`);
+    // 出错时不会回流，先读成文本才能看到上游到底说了什么
+    throw new Error(`模型接口 ${res.status}：${(await res.text()).slice(0, 300)}`);
   }
 
-  const body = JSON.parse(text);
-  const message = body?.choices?.[0]?.message;
-  if (!message) throw new Error(`模型返回里没有 message：${text.slice(0, 300)}`);
+  // 兜底：万一换的厂商不认 stream，会直接回一整段 JSON。此时走老路，
+  // 不至于整个 agent 挂掉。（顺带一句：若某厂商因为 stream_options 报 400，
+  // 错误原文会带着它的提示，把上面那个字段去掉即可。）
+  const ctype = res.headers.get('content-type') || '';
+  if (!ctype.includes('text/event-stream')) {
+    const text = await res.text();
+    let body;
+    try {
+      body = JSON.parse(text);
+    } catch {
+      throw new Error(`模型返回不是 JSON：${text.slice(0, 300)}`);
+    }
+    const message = body?.choices?.[0]?.message;
+    if (!message) throw new Error(`模型返回里没有 message：${text.slice(0, 300)}`);
+    return {
+      message: {
+        role: 'assistant',
+        content: message.content ?? '',
+        ...(message.tool_calls?.length ? { tool_calls: message.tool_calls } : {}),
+      },
+      usage: body.usage ?? null,
+    };
+  }
 
-  // ★ deepseek-reasoner / flash 会带 reasoning_content。把它塞回下一次请求会被接口拒绝，
-  //   所以这里只挑需要的字段，未来换模型也不会带进脏字段。
-  return {
-    message: {
-      role: 'assistant',
-      content: message.content ?? '',
-      ...(message.tool_calls?.length ? { tool_calls: message.tool_calls } : {}),
-    },
-    usage: body.usage ?? null,
-  };
+  return readChatStream(res, { onDelta, timeoutMs: llm.timeoutMs });
 }
 
 /* ── 小工具 ─────────────────────────────────────────────────────────── */
@@ -245,7 +383,14 @@ function createRecorder({ surface, model, ownerId = 'owner', conversationId = nu
     }
   }
 
-  return { start, step, finish, get runId() { return runId; } };
+  return {
+    start,
+    step,
+    finish,
+    get runId() {
+      return runId;
+    },
+  };
 }
 
 /* ══════════════════════════════════════════════════════════════════════
@@ -279,7 +424,10 @@ export async function runAgent({
   const ctx = createToolContext();
   const messages = [
     // 有历史才注入铁律 9 —— 单轮时它只是噪音，还会让评测集和线上跑在两条 prompt 上
-    { role: 'system', content: buildSystemPrompt(todayForAgent(), { multiTurn: history.length > 0 }) },
+    {
+      role: 'system',
+      content: buildSystemPrompt(todayForAgent(), { multiTurn: history.length > 0 }),
+    },
     // ★ 历史是「对话背景」，不是「数据来源」。它只能帮模型听懂指代，
     //   里面任何价格都不作数 —— 那条约束在提示词里，也在 _conversation.js 的注释里。
     ...history,
@@ -316,10 +464,17 @@ export async function runAgent({
     //   而纯静默正是这次改造要消灭的东西。跟 tool-start 同一个道理。
     onEvent({ type: 'llm-start', round: rounds });
 
+    // 这一轮往外吐了多少正文字符。用来判断「要不要撤回」——
+    // 见下面 wantsTools 那段，这是 v2 唯一的兜底分支。
+    let roundDeltas = 0;
+
     const t0 = Date.now();
     let res;
     try {
-      res = await callLLM(messages, llm);
+      res = await callLLM(messages, llm, (text) => {
+        roundDeltas += text.length;
+        onEvent({ type: 'delta', round: rounds, text });
+      });
     } catch (err) {
       failure = `第 ${rounds} 轮模型调用失败：${err.message}`;
       onEvent({ type: 'llm-error', round: rounds, message: err.message });
@@ -334,6 +489,18 @@ export async function runAgent({
     messages.push(message);
 
     const wantsTools = message.tool_calls?.length ?? 0;
+
+    // ★ v2 的安全阀。**这一轮是要工具还是写答案，只有等它吐完才知道**，
+    //   所以在吐的过程中只能先照传（这就是方案 B，而不是先缓冲的 B'）。
+    //   万一某轮先说了几个字再决定调工具，这几个字已经打到用户屏幕上了，得撤回。
+    //
+    //   实测依据（scripts/probe-delta.mjs，连打 10 次）：工具轮的 content 长度
+    //   全是 0 ⇒ 这条几乎不会触发。但**换模型/改提示词就得重测**，不能拿一次当规律，
+    //   所以这段留着 —— 前端收到 retract 就把当前气泡正文清空、退回阶段标签。
+    if (wantsTools && roundDeltas > 0) {
+      onEvent({ type: 'retract', round: rounds });
+    }
+
     onEvent({ type: 'round', round: rounds, wantsTools });
 
     await recorder.step({
