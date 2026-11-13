@@ -47,7 +47,18 @@ function parseInline(text) {
     runs.push({ text: m[1], bold: true });
     last = m.index + m[0].length;
   }
-  if (last < text.length) runs.push({ text: text.slice(last), bold: false });
+  if (last < text.length) {
+    // ★ 打字机的中间态：粗体标记只到了一半。比如 delta 刚到 `**结论：11 月 20 日`，
+    //   收尾的 `**` 还在下一块里 —— BOLD 要求成对，匹配不上，两个星号会原样露出来，
+    //   就像渲染坏了。这里只处理**正则吃完后剩下的尾巴**：凡是能配对的都已经在上面的
+    //   循环里被吃掉了，留在尾巴里的 `**` 一定是没闭合的孤儿，直接去掉。
+    //
+    //   这是纯渲染层的处理，**不影响数据**：done 之后会用 done.answer 整体重算一次，
+    //   到那时标记已经闭合，这次裁剪根本不会触发。
+    //   （代码块不走 parseInline，所以代码里的星号不会被误删。）
+    const tail = text.slice(last).replace(/\*\*/g, '');
+    if (tail) runs.push({ text: tail, bold: false });
+  }
 
   return runs;
 }
