@@ -53,6 +53,15 @@ import { toBlocks } from '../utils/markdown.js';
 /** 重试可能有意义的错误码。5000（服务异常）/ 5030（已停服）重试一百次也一样 */
 const RETRYABLE = new Set([5020, 5040, -1]);
 
+/**
+ * 打字机重解析节流。
+ *
+ * 实测一条 188 字的答案被拆成 127 个 delta，从首字到末字只花 ~600ms（≈200 块/秒）。
+ * 每来一块就整段重解析一遍 markdown，等于一秒内 200 次 setState → 主线程直接打满。
+ * 50ms 一次（≈20 次/秒）在观感上完全看不出区别，188 字仍然是在半秒里长出来的。
+ */
+const PARSE_THROTTLE_MS = 50;
+
 export const useAgentStore = defineStore('agent', () => {
   /** 当前会话的消息：用户与助手交替 */
   const messages = ref([]);
@@ -193,6 +202,9 @@ export const useAgentStore = defineStore('agent', () => {
      */
     const reply = messages.value[messages.value.length - 1];
 
+    // 打字机：delta 分片一个个进来，攒成原文后按节流重解析成块数组
+    const typing = makeTyping(reply);
+
     const startedAt = Date.now();
     stopTimer();
     timer = setInterval(() => {
@@ -217,6 +229,14 @@ export const useAgentStore = defineStore('agent', () => {
         } else if (ev.type === 'stage') {
           // 后端给的是人话（工具名 → 文案的映射在后端），原样显示，前端不认识任何工具名
           reply.stage = ev.label || '';
+        } else if (ev.type === 'delta') {
+          // 答案正文的一块。这里**不做判重也不存原文**：done 那一步会用权威全文
+          // 整体覆盖一次，所以 delta 只负责「让人早点看到」，不负责最终正确性。
+          typing.push(ev.text || '');
+        } else if (ev.type === 'retract') {
+          // 这一轮其实是在要工具，刚才打到屏幕上的那几个字不是答案，收回去。
+          // 实测工具轮的 content 为空（0/10），这条是安全阀，正常路径不会走到。
+          typing.retract();
         } else if (ev.type === 'done') {
           done = ev.data;
         }
@@ -226,6 +246,9 @@ export const useAgentStore = defineStore('agent', () => {
       // 留这一条纯属防守 —— 宁可报错让用户重试，也不能把 loading 态永久卡住。
       if (!done) throw new Error('没能收到完整回答，请重试');
 
+      // ★ 权威答案在这里。顺序不能反：先停掉打字机的挂起解析，再用全文重算一次。
+      //   反了的话那个 50ms 的尾巴会在覆盖之后再跑一遍，把 blocks 写回「半截」的旧原文。
+      typing.cancel();
       // 真正的块交给解析器，气泡只负责渲染块
       reply.blocks = toBlocks(done.answer ?? '');
       reply.state = 'ok';
@@ -239,6 +262,9 @@ export const useAgentStore = defineStore('agent', () => {
       };
       adoptConversation(done.conversationId);
     } catch (e) {
+      // 已经打到屏幕上的半截正文不收回 —— 字蹦出来又消失，比压根没显示更让人
+      // 怀疑页面坏了。settle = 取消挂起的解析 + 把现在的原文立即落一次块。
+      typing.settle();
       // 两条链路（axios 拦截器 / streamAgent）都已归一化成
       // { code, message, status, data }，message 可以直接展示
       reply.state = 'error';
@@ -248,6 +274,8 @@ export const useAgentStore = defineStore('agent', () => {
       // ★ 失败时后端也给了 conversationId，接住它，重试才不会裂成两个会话
       adoptConversation(e?.data?.conversationId);
     } finally {
+      // 兜底：任何路径都不许留下挂起的定时器（store 是全局的，切走页面它照样会写）
+      typing.cancel();
       stopTimer();
       sending.value = false;
     }
@@ -306,5 +334,76 @@ function fromServer(m) {
     error: '',
     elapsed: 0,
     retryable: false,
+  };
+}
+
+/**
+ * 打字机渲染器：delta 分片 → blocks 块数组。
+ *
+ * ══════════════════════════════════════════════════════════════════════
+ *  三件事，每一件的顺序都不能反
+ * ══════════════════════════════════════════════════════════════════════
+ *  ① push(text)：攒进原文，按 PARSE_THROTTLE_MS 节流重解析。
+ *     用的是**尾部节流**：距上次解析不足 50ms 时排一个定时器补一次，
+ *     而不是丢掉这一块 —— 丢掉的话最后一个分片可能永远不显示，
+ *     界面会停在「还差几个字」的半截上。
+ *
+ *  ② cancel()：停掉挂起的解析。**done 覆盖 blocks 之前必须先调**，
+ *     否则那个 50ms 的尾巴会在覆盖之后触发，把 blocks 写回旧原文。
+ *
+ *  ③ retract()：这一轮其实要调工具，先把已经吐出来的字收回去。
+ *
+ * ⚠️ 原文只活在这个闭包里，**不进 store、不进响应式**：它只是渲染的中间产物，
+ *    权威值是 done.answer。放进 store 就多了一份可能和库不一致的数据。
+ *
+ * @param {object} reply 消息对象。必须是 store 里读出来的 proxy ——
+ *       直接改 push 进去的裸对象不会触发更新（见 ask 里那段 ⚠️）
+ */
+function makeTyping(reply) {
+  let raw = '';
+  let last = 0;
+  let pending = null;
+
+  const flush = () => {
+    last = Date.now();
+    reply.blocks = toBlocks(raw);
+  };
+
+  const cancel = () => {
+    if (pending) clearTimeout(pending);
+    pending = null;
+  };
+
+  const schedule = () => {
+    const wait = PARSE_THROTTLE_MS - (Date.now() - last);
+    if (wait <= 0) {
+      cancel();
+      flush();
+      return;
+    }
+    if (pending) return; // 已经排过了，这一块会被那次一起带出去
+    pending = setTimeout(() => {
+      pending = null;
+      flush();
+    }, wait);
+  };
+
+  return {
+    push(text) {
+      if (!text) return;
+      raw += text;
+      schedule();
+    },
+    retract() {
+      raw = '';
+      cancel();
+      reply.blocks = [];
+    },
+    cancel,
+    /** 收尾：先停挂起的，再把现有原文立即落一次（出错时用，保住半截正文） */
+    settle() {
+      cancel();
+      if (raw) flush();
+    },
   };
 }

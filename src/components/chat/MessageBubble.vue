@@ -8,50 +8,71 @@
   <div v-else class="row bot">
     <div class="avatar" aria-hidden="true">✈</div>
 
-    <div class="bubble bot-bubble">
-      <!-- ① 等待中：3 个点 + 阶段 + 真实秒数。
-           stage 有值 = 后端在告诉我们它此刻在干什么（工具名 → 人话的映射在后端，
-           前端不认识任何工具名）；空串 = 连第一个阶段事件都还没到，此时只说笼统文案。
-           秒数一直留着：卡在 35 秒的日历请求上时，它是「没死」的唯一证据。 -->
-      <div v-if="state === 'loading'" class="waiting">
-        <span class="dots"><i></i><i></i><i></i></span>
-        <span class="wait-text">{{ stage || '正在查实时票价' }} · 已等 {{ elapsed }} 秒</span>
-      </div>
-
-      <!-- ② 失败：文案来自后端，前端一个字不翻译；能不能重试由父组件判断 -->
-      <div v-else-if="state === 'error'" class="failed">
-        <p class="failed-msg">{{ error || '这次没能拿到回答' }}</p>
-        <button v-if="retryable" class="retry" type="button" @click="emit('retry')">重试</button>
-      </div>
-
-      <!-- ③ 成功：按块渲染。见 src/utils/markdown.js 为什么不用 v-html -->
-      <template v-else>
-        <template v-for="(blk, i) in blocks" :key="i">
-          <p v-if="blk.type === 'p'" class="blk-p">
-            <span v-for="(r, j) in blk.runs" :key="j" :class="{ b: r.bold }">{{ r.text }}</span>
-          </p>
-
-          <ul v-else-if="blk.type === 'ul'" class="blk-list">
-            <li v-for="(item, j) in blk.items" :key="j">
-              <span v-for="(r, k) in item" :key="k" :class="{ b: r.bold }">{{ r.text }}</span>
-            </li>
-          </ul>
-
-          <ol v-else-if="blk.type === 'ol'" class="blk-list">
-            <li v-for="(item, j) in blk.items" :key="j">
-              <span v-for="(r, k) in item" :key="k" :class="{ b: r.bold }">{{ r.text }}</span>
-            </li>
-          </ol>
-
-          <pre v-else-if="blk.type === 'code'" class="blk-code">{{ blk.text }}</pre>
+    <div class="bot-main">
+      <!-- 正文上方那一行状态：只在「已经有正文」时出现。
+           打字过程中显示真实阶段 + 秒数（说明还没结束），失败时显示错误与重试。
+           挪到气泡外面是因为正文要在下面一行行长出来，两处文字挤在同一个气泡里会打架。 -->
+      <div v-if="hasBlocks && state !== 'ok'" class="meta-line">
+        <template v-if="state === 'loading'">
+          <span class="dots sm"><i></i><i></i><i></i></span>
+          <span class="meta-text">{{ stage || '正在整理答案' }} · 已等 {{ elapsed }} 秒</span>
         </template>
-      </template>
+        <template v-else>
+          <span class="meta-text bad">{{ error || '这次没能拿到回答' }}</span>
+          <button v-if="retryable" class="retry inline" type="button" @click="emit('retry')">
+            重试
+          </button>
+        </template>
+      </div>
+
+      <div class="bubble bot-bubble">
+        <!-- ① 还没出字：3 个点 + 阶段 + 真实秒数。
+             stage 有值 = 后端在告诉我们它此刻在干什么（工具名 → 人话的映射在后端，
+             前端不认识任何工具名）；空串 = 连第一个阶段事件都还没到。
+             秒数一直留着：卡在 35 秒的日历请求上时，它是「没死」的唯一证据。 -->
+        <div v-if="!hasBlocks && state === 'loading'" class="waiting">
+          <span class="dots"><i></i><i></i><i></i></span>
+          <span class="wait-text">{{ stage || '正在查实时票价' }} · 已等 {{ elapsed }} 秒</span>
+        </div>
+
+        <!-- ② 一个字都没收到就失败：文案来自后端，前端一个字不翻译 -->
+        <div v-else-if="!hasBlocks && state === 'error'" class="failed">
+          <p class="failed-msg">{{ error || '这次没能拿到回答' }}</p>
+          <button v-if="retryable" class="retry" type="button" @click="emit('retry')">重试</button>
+        </div>
+
+        <!-- ③ 有正文：按块渲染 —— 打字中走的也是这一支。
+             见 src/utils/markdown.js 为什么不用 v-html -->
+        <template v-else>
+          <template v-for="(blk, i) in blocks" :key="i">
+            <p v-if="blk.type === 'p'" class="blk-p">
+              <span v-for="(r, j) in blk.runs" :key="j" :class="{ b: r.bold }">{{ r.text }}</span>
+            </p>
+
+            <ul v-else-if="blk.type === 'ul'" class="blk-list">
+              <li v-for="(item, j) in blk.items" :key="j">
+                <span v-for="(r, k) in item" :key="k" :class="{ b: r.bold }">{{ r.text }}</span>
+              </li>
+            </ul>
+
+            <ol v-else-if="blk.type === 'ol'" class="blk-list">
+              <li v-for="(item, j) in blk.items" :key="j">
+                <span v-for="(r, k) in item" :key="k" :class="{ b: r.bold }">{{ r.text }}</span>
+              </li>
+            </ol>
+
+            <pre v-else-if="blk.type === 'code'" class="blk-code">{{ blk.text }}</pre>
+          </template>
+        </template>
+      </div>
     </div>
   </div>
 </template>
 
 <script setup>
-defineProps({
+import { computed } from 'vue';
+
+const props = defineProps({
   /** user | assistant */
   role: { type: String, default: 'assistant' },
   /** 用户消息的纯文本 */
@@ -71,6 +92,13 @@ defineProps({
 });
 
 const emit = defineEmits(['retry']);
+
+/**
+ * 有没有正文。
+ * 这一个判断同时管三件事：等待态要不要显示、状态行放气泡里还是气泡上方、
+ * 失败时是「只报错」还是「半截正文 + 报错」。
+ */
+const hasBlocks = computed(() => props.blocks.length > 0);
 </script>
 
 <style scoped>
@@ -84,6 +112,14 @@ const emit = defineEmits(['retry']);
 }
 .row.bot {
   align-items: flex-start;
+}
+
+/* 头像右边那一列：状态行 + 气泡。
+   min-width: 0 是必需的 —— flex 子项默认 min-width:auto，
+   正文里出现长串不可断的字符（比如一长串日期区间）会把整列撑出容器。 */
+.bot-main {
+  flex: 1;
+  min-width: 0;
 }
 
 .avatar {
@@ -154,6 +190,35 @@ const emit = defineEmits(['retry']);
   background: #f5f7fa;
   border-radius: 8px;
   overflow-x: auto;
+}
+
+/* ---------- 气泡上方那一行状态（有正文时才出现） ---------- */
+.meta-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  /* 固定最小高度：状态行出现/消失时，下面的正文不要跟着上下跳 */
+  min-height: 18px;
+  margin: 0 0 5px 2px;
+}
+.meta-text {
+  font-size: 12px;
+  color: #9aa5b5;
+}
+.meta-text.bad {
+  color: #b42318;
+}
+.dots.sm {
+  gap: 3px;
+}
+.dots.sm i {
+  width: 4px;
+  height: 4px;
+}
+.retry.inline {
+  margin-top: 0;
+  padding: 2px 10px;
+  font-size: 12px;
 }
 
 /* ---------- 等待 ---------- */

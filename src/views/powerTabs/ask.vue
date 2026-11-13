@@ -113,6 +113,23 @@ watch(
   () => messages.value.length,
   () => nextTick(scrollToBottom),
 );
+
+/**
+ * 打字时正文一块块长出来，消息条数不变 —— 上面那个 length watcher 不会触发。
+ * blocks 每次重解析都是**整体替换成新数组**，所以盯引用就够，不用 deep。
+ *
+ * 只有「本来就贴着底部」才跟：用户往上翻看之前的回答时，不该被强行拽回来。
+ * 判断用的是更新前的 DOM（用户此刻看到的），这正是我们要的。
+ */
+watch(
+  () => messages.value[messages.value.length - 1]?.blocks,
+  () => {
+    const el = scroller.value;
+    if (!el) return;
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    if (nearBottom) nextTick(scrollToBottom);
+  },
+);
 watch(sending, (v) => {
   if (!v) nextTick(scrollToBottom);
 });
