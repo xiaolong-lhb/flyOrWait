@@ -20,7 +20,17 @@
 - [八、已知缺口与技术债](#八已知缺口与技术债)
 - [九、本地开发 · 部署 · 排错](#九本地开发--部署--排错)
 - [十、面试问答卡](#十面试问答卡)
-- [十一、往 Agent 演进](#十一往-agent-演进)
+- [十一、Agent 层为什么加](#十一agent-层为什么加--v2-重写)
+
+> **阅读约定** · 2026-11 流式改造新增的部分，都被一对**绿色边界线**夹着：
+> `🟢 ━━━ v2 新增 · 从这里开始 ━━━` … `🟢 ━━━ v2 新增 · 到此结束 ━━━`。
+> 两条线之外的都是 v1 原文，放心跳读。
+>
+> 📍 **只想看流式改造**：[3.4 流式链路](#34-流式链路--v2) ·
+> [4.4 LLM 读流](#44-callllm--v2-读流) ·
+> [5.5 打字机](#55-打字机--v2) ·
+> [七·I 流式坑](#i-流式--v2) ·
+> [十一、Agent 层](#十一agent-层为什么加--v2-重写)
 
 ---
 
@@ -28,10 +38,10 @@
 
 ### 1.1 它回答的两个问题
 
-| 问题 | 谁回答 | 数据从哪来 |
-|---|---|---|
-| ① **哪天出发最便宜？** | `api/_compose.js::buildDateAnswer` | 同一份价格日历，按灵活度切窗口扫描 |
-| ② **现在这个价该不该买？** | `api/_judge.js::judgePrices` | 未来窗口内的 P25 / P75 分位 |
+| 问题                       | 谁回答                             | 数据从哪来                         |
+| -------------------------- | ---------------------------------- | ---------------------------------- |
+| ① **哪天出发最便宜？**     | `api/_compose.js::buildDateAnswer` | 同一份价格日历，按灵活度切窗口扫描 |
+| ② **现在这个价该不该买？** | `api/_judge.js::judgePrices`       | 未来窗口内的 P25 / P75 分位        |
 
 第 ② 个问题是产品的主线。它的判断逻辑只有一句话：
 
@@ -47,22 +57,22 @@
 
 ### 1.2 功能清单（截至 2026-10-26）
 
-| 模块 | 功能 | 状态 |
-|---|---|---|
-| 查询 | 单程 / 往返、21 个机场（18 国内 + 3 港澳台）、人数 1~9 | ✅ |
-| 查询 | 日期灵活度：固定 / ±3 天 / ±7 天 / 整月最优 | ✅ |
-| 结果 | 整屏等待态（含已等待秒数，后端实测 20~60 秒） | ✅ |
-| 结果 | 答案①：最优出发日 + 省多少钱 + 该日的百分位 | ✅ |
-| 结果 | 答案②：档位 + 百分位 + 典型区间 + 「怎么等」三件套 + 推理链 | ✅ |
-| 结果 | 价格日历：整月、按档位上色、标出所选日、可折叠 | ✅ |
-| 结果 | 航班列表：实时价、当天最低标记、点「盯价」指定基准航班 | ✅ |
-| 结果 | 订阅卡片：阈值 / 决策截止日 / 通知邮箱，按钮带提交中态 | ✅ |
-| 订阅 | 列表按 active → paused → expired 排序；最近价格 + 抓价时间 | ✅ |
-| 订阅 | 编辑态（阈值 / 邮箱 / 截止日一起改）、暂停 / 恢复、取消 | ✅ |
-| 订阅 | 通知记录表（**独立于订阅存在**，订阅删光也照样显示） | ✅ |
-| 设置 | 默认通知邮箱（失焦自动保存 + 重置）、邮件总开关、本月查询次数 | ✅ |
-| 定时 | 每天 09:00（北京）Cron 比价，命中 / 到期发信，**同一订阅只发一次** | ✅ 代码完成，端到端待验收 |
-| 可观测 | `cron_log` 运行流水：跑没跑、跑完没、失败原因 | ✅ 代码完成；建表后生效 |
+| 模块   | 功能                                                               | 状态                      |
+| ------ | ------------------------------------------------------------------ | ------------------------- |
+| 查询   | 单程 / 往返、21 个机场（18 国内 + 3 港澳台）、人数 1~9             | ✅                        |
+| 查询   | 日期灵活度：固定 / ±3 天 / ±7 天 / 整月最优                        | ✅                        |
+| 结果   | 整屏等待态（含已等待秒数，后端实测 20~60 秒）                      | ✅                        |
+| 结果   | 答案①：最优出发日 + 省多少钱 + 该日的百分位                        | ✅                        |
+| 结果   | 答案②：档位 + 百分位 + 典型区间 + 「怎么等」三件套 + 推理链        | ✅                        |
+| 结果   | 价格日历：整月、按档位上色、标出所选日、可折叠                     | ✅                        |
+| 结果   | 航班列表：实时价、当天最低标记、点「盯价」指定基准航班             | ✅                        |
+| 结果   | 订阅卡片：阈值 / 决策截止日 / 通知邮箱，按钮带提交中态             | ✅                        |
+| 订阅   | 列表按 active → paused → expired 排序；最近价格 + 抓价时间         | ✅                        |
+| 订阅   | 编辑态（阈值 / 邮箱 / 截止日一起改）、暂停 / 恢复、取消            | ✅                        |
+| 订阅   | 通知记录表（**独立于订阅存在**，订阅删光也照样显示）               | ✅                        |
+| 设置   | 默认通知邮箱（失焦自动保存 + 重置）、邮件总开关、本月查询次数      | ✅                        |
+| 定时   | 每天 09:00（北京）Cron 比价，命中 / 到期发信，**同一订阅只发一次** | ✅ 代码完成，端到端待验收 |
+| 可观测 | `cron_log` 运行流水：跑没跑、跑完没、失败原因                      | ✅ 代码完成；建表后生效   |
 
 ### 1.3 三条产品红线
 
@@ -152,22 +162,22 @@ sequenceDiagram
 
 ### 2.1 全貌
 
-| 层 | 选型 | 版本 | 干什么 |
-|---|---|---|---|
-| 视图 | Vue 3（`<script setup>` + Composition API） | ^3.5.42 | 四个页面 |
-| 构建 | Vite | ^8.2.2 | 开发服务器 + 打包 |
-| 路由 | Vue Router（`createWebHistory`） | ^5.3.1 | 单页布局 + 子路由 |
-| 状态 | Pinia（setup store 写法） | ^4.0.3 | 3 个 store |
-| UI | Element Plus | ^2.14.7 | 下拉、日期、开关、消息框 |
-| 请求 | axios | ^1.20.0 | 唯一网络出口 + 两个拦截器 |
-| 后端 | Vercel Serverless Functions（Node ESM） | Node 22/24 | 根目录 `api/**.js`，目录即路由 |
-| 数据库 | Supabase（PostgreSQL + PostgREST） | supabase-js ^2.117 | 5 张表 |
-| 邮件 | nodemailer + QQ 邮箱 SMTP | ^10.1.7 | 465/SSL |
-| 价格日历 | Apify actor `lergassy~flight-price-calendar` | — | 抓 Google Flights 日历 |
-| 航班列表 | SerpApi `engine=google_flights` | — | 实时航班 + 价格 |
-| 备用源 | Sky Scrapper（RapidAPI） | — | 已降级，代码保留 |
-| 部署 | Vercel Hobby | — | 静态 + 函数 + Cron |
-| 工程 | ESLint 10 + oxlint + Prettier 3.9 | — | `format → lint → build` 三板斧 |
+| 层       | 选型                                         | 版本               | 干什么                         |
+| -------- | -------------------------------------------- | ------------------ | ------------------------------ |
+| 视图     | Vue 3（`<script setup>` + Composition API）  | ^3.5.42            | 四个页面                       |
+| 构建     | Vite                                         | ^8.2.2             | 开发服务器 + 打包              |
+| 路由     | Vue Router（`createWebHistory`）             | ^5.3.1             | 单页布局 + 子路由              |
+| 状态     | Pinia（setup store 写法）                    | ^4.0.3             | 3 个 store                     |
+| UI       | Element Plus                                 | ^2.14.7            | 下拉、日期、开关、消息框       |
+| 请求     | axios                                        | ^1.20.0            | 唯一网络出口 + 两个拦截器      |
+| 后端     | Vercel Serverless Functions（Node ESM）      | Node 22/24         | 根目录 `api/**.js`，目录即路由 |
+| 数据库   | Supabase（PostgreSQL + PostgREST）           | supabase-js ^2.117 | 5 张表                         |
+| 邮件     | nodemailer + QQ 邮箱 SMTP                    | ^10.1.7            | 465/SSL                        |
+| 价格日历 | Apify actor `lergassy~flight-price-calendar` | —                  | 抓 Google Flights 日历         |
+| 航班列表 | SerpApi `engine=google_flights`              | —                  | 实时航班 + 价格                |
+| 备用源   | Sky Scrapper（RapidAPI）                     | —                  | 已降级，代码保留               |
+| 部署     | Vercel Hobby                                 | —                  | 静态 + 函数 + Cron             |
+| 工程     | ESLint 10 + oxlint + Prettier 3.9            | —                  | `format → lint → build` 三板斧 |
 
 ### 2.2 为什么是这些
 
@@ -203,25 +213,25 @@ LLM 做不到这点的同时还会引入不可复现的失败。所以判断留�
 
 ### 2.3 外部服务速查（含坑）
 
-| 服务 | 关键约束 | 必须知道的事 |
-|---|---|---|
-| **Apify** | 按行计费 `$0.0002/行`；90 天 = `$0.018`；空结果不计费 | `currency` 默认 **USD**、`market` 默认空 ⇒ 必须显式传 `CNY` + `CN`；`proxyConfiguration` 默认钉死住宅代理而免费档该组可用数为 0 ⇒ 必须显式 `dataSource:'page'`；字段叫 `date` 不叫 `day`，翻译只在这里做 |
-| **SerpApi** | 250 次/月；超时 20s + 1 次重试 | `type`：**1 = 往返、2 = 单程**（不是直觉的 1/0）；往返的 `best_flights` 是去程候选，回程要拿 `departure_token` 再打一次；**HTTP 200 也可能业务失败**（body 里带 `error`），只看状态码会误判成功 |
-| **Sky Scrapper** | 免费档实测 20 次/月 | `fromDate`/`toDate` 必填但**值被忽略**（传 2030 年也返回同一份）；会偶发 `Something went wrong`，重试一次通常就好 |
-| **Supabase** | 新项目 public schema 新表**不再自动开放**给 Data API | 不显式 `grant ... to service_role` 就报 `42501`；列名 `from` 是 SQL 保留字，只能叫 `origin` |
-| **QQ SMTP** | 465 / SSL；授权码 16 位 | `info.accepted` 为空 = SMTP 收下了但拒收这个收件人 ⇒ **不能算成功**，否则库里会写一条假的「已通知」 |
-| **Vercel** | 函数 60s；Hobby 每 job 每天 1 次、每项目 100 个 job；**日志免费版只留 30 分钟** | cron 表达式写 **UTC**；Hobby 会在指定小时内**任意时刻**触发（`0 1 * * *` 实际落在 01:00~01:59）；投递 best effort，**漏发不报错** |
-| **Google Flights（经 Apify）** | 部分航司把票价留在 Google 之外 | 报出来的「最低价」系统性偏低 ⇒ 页面措辞一律用「**参考价**」，且**只认这一个源**，不两源混用 |
+| 服务                           | 关键约束                                                                        | 必须知道的事                                                                                                                                                                                             |
+| ------------------------------ | ------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Apify**                      | 按行计费 `$0.0002/行`；90 天 = `$0.018`；空结果不计费                           | `currency` 默认 **USD**、`market` 默认空 ⇒ 必须显式传 `CNY` + `CN`；`proxyConfiguration` 默认钉死住宅代理而免费档该组可用数为 0 ⇒ 必须显式 `dataSource:'page'`；字段叫 `date` 不叫 `day`，翻译只在这里做 |
+| **SerpApi**                    | 250 次/月；超时 20s + 1 次重试                                                  | `type`：**1 = 往返、2 = 单程**（不是直觉的 1/0）；往返的 `best_flights` 是去程候选，回程要拿 `departure_token` 再打一次；**HTTP 200 也可能业务失败**（body 里带 `error`），只看状态码会误判成功          |
+| **Sky Scrapper**               | 免费档实测 20 次/月                                                             | `fromDate`/`toDate` 必填但**值被忽略**（传 2030 年也返回同一份）；会偶发 `Something went wrong`，重试一次通常就好                                                                                        |
+| **Supabase**                   | 新项目 public schema 新表**不再自动开放**给 Data API                            | 不显式 `grant ... to service_role` 就报 `42501`；列名 `from` 是 SQL 保留字，只能叫 `origin`                                                                                                              |
+| **QQ SMTP**                    | 465 / SSL；授权码 16 位                                                         | `info.accepted` 为空 = SMTP 收下了但拒收这个收件人 ⇒ **不能算成功**，否则库里会写一条假的「已通知」                                                                                                      |
+| **Vercel**                     | 函数 60s；Hobby 每 job 每天 1 次、每项目 100 个 job；**日志免费版只留 30 分钟** | cron 表达式写 **UTC**；Hobby 会在指定小时内**任意时刻**触发（`0 1 * * *` 实际落在 01:00~01:59）；投递 best effort，**漏发不报错**                                                                        |
+| **Google Flights（经 Apify）** | 部分航司把票价留在 Google 之外                                                  | 报出来的「最低价」系统性偏低 ⇒ 页面措辞一律用「**参考价**」，且**只认这一个源**，不两源混用                                                                                                              |
 
 ### 2.4 成本模型
 
-| 动作 | 成本 | 说明 |
-|---|---|---|
-| 结果页查询一次（固定日期） | ≈ `$0.018` + 1 次 SerpApi | Apify 90 天 × `$0.0002` |
-| 结果页查询一次（整月最优） | 同上（Apify 只打一次） | 航班那一路串行补一次 |
-| 订阅比价一轮（每条） | ≈ `$0.018` | 窗口 = 今天到出发日 + 1 天 |
-| 本地开发（默认 `--replay`） | **0** | 读 `samples/` 里的真实响应录像 |
-| 发一封邮件 | 0 | QQ 邮箱 |
+| 动作                        | 成本                      | 说明                           |
+| --------------------------- | ------------------------- | ------------------------------ |
+| 结果页查询一次（固定日期）  | ≈ `$0.018` + 1 次 SerpApi | Apify 90 天 × `$0.0002`        |
+| 结果页查询一次（整月最优）  | 同上（Apify 只打一次）    | 航班那一路串行补一次           |
+| 订阅比价一轮（每条）        | ≈ `$0.018`                | 窗口 = 今天到出发日 + 1 天     |
+| 本地开发（默认 `--replay`） | **0**                     | 读 `samples/` 里的真实响应录像 |
+| 发一封邮件                  | 0                         | QQ 邮箱                        |
 
 这也是为什么本地默认回放：**回放 0 元，真机约 $0.018/次，差 150 倍**。
 开关只活在 `scripts/dev-api.mjs` 里，绝不写进 `api/`——线上误判会去读被 `.vercelignore` 排除的 `samples/`。
@@ -315,15 +325,15 @@ flyOrWait/
 
 **① 响应体永远是三件套 `{code, message, data}`，且 HTTP 状态码说真话**
 
-| 场景 | HTTP | code |
-|---|---|---|
-| 成功 | 200 | 0 |
-| 参数校验失败 | 400 | 4000 |
-| 资源不存在 | 404 | 4040 |
-| 资源冲突（已订阅） | 409 | 4090 |
-| 服务端内部错误 | 500 | 5000 |
-| 外部数据源失败 | 502 | 5020 |
-| 网络层（前端造） | 0 | -1 |
+| 场景               | HTTP | code |
+| ------------------ | ---- | ---- |
+| 成功               | 200  | 0    |
+| 参数校验失败       | 400  | 4000 |
+| 资源不存在         | 404  | 4040 |
+| 资源冲突（已订阅） | 409  | 4090 |
+| 服务端内部错误     | 500  | 5000 |
+| 外部数据源失败     | 502  | 5020 |
+| 网络层（前端造）   | 0    | -1   |
 
 编号规则：**前三位 = HTTP 码，末位是序号**。看到 `4000` 就知道是 400 类，将来要细分就排 `4001`。
 不用「一律 200 + body 里放错误」的原因：DevTools 一眼看不出错、平台日志统计不到错误率。
@@ -347,30 +357,88 @@ flyOrWait/
 
 ---
 
+### 3.4 流式链路 · v2
+
+> 🟢 **━━━━━━━ v2 新增 · 从这里开始 ━━━━━━━**
+>
+> 2026-11 流式改造加的内容。看到下面的「v2 新增 · 到此结束」，
+> 就说明回到 v1 原文了。
+
+**为什么要有这条链**：不开流式，等于让厂商替我们把 token 攒齐再一次性给，
+用户从提问到看见第一个字要干等 6~10 秒。但**开了流式不代表用户就看见字了**——
+还得有五跳把它送到屏幕上，少任何一跳，前面那跳都白做。
+
+```
+模型 SSE ──① readChatStream──> 拼回一个完整 message（形状与非流式逐字段一致）
+        ──② onDelta────────> runAgent 抛 delta 事件，同时累计 roundDeltas
+        ──③ relay──────────> 写成 SSE，一个事件一行 data:
+        ──④ streamAgent────> 前端手写解析，逐个 yield
+        ──⑤ makeTyping─────> 50ms 尾部节流 → toBlocks → 气泡
+```
+
+**① 为什么要把流「拼回」message**
+循环体、CLI、评测集、旧的非流式接口，全都只认 `{ message, usage }`。
+只要 `callLLM` 的返回形状不变，这一层改造对下游**完全透明**——
+一次改完，不用动十处调用点。这是整次改造最重要的一条约束。
+
+**② 事件序是固定的，不能乱**
+
+| 序  | 事件             | 前端拿它做什么                                                   |
+| --- | ---------------- | ---------------------------------------------------------------- |
+| 1   | `meta`           | 认下 conversationId。断线时收不到 `done`，会话 id 只能靠它先落地 |
+| 2…  | `stage`          | 显示「正在查 11 月价格」（工具名→人话的映射在后端）              |
+| 3…  | `delta`          | 往气泡里追加正文                                                 |
+| ?   | `retract`        | 这一轮其实要调工具，把刚打到屏幕上的字收回去                     |
+| 末  | `done` / `error` | **`done.answer` 才是权威全文**，前端收到必须整体覆盖             |
+
+**③ 四层超时，一层比一层宽**
+
+| 层级          | 阈值 | 管什么                               |
+| ------------- | ---- | ------------------------------------ |
+| 首块          | 10s  | 一个字都没来（真故障，要报错重试）   |
+| 单次模型      | 15s  | 这一次调用的总时长                   |
+| 接口          | 45s  | 整个 agent 循环（多轮工具调用）      |
+| `maxDuration` | 60s  | Vercel 硬顶，留 15s 给收尾写库       |
+| 前端空闲      | 45s  | 这么久没收到任何字节（含心跳）就放弃 |
+
+**首块和单次必须分开**：一个数字没法同时表达「一个字都不回」和「在慢慢吐」——
+前者要立刻报错，后者要等。合成一个数，就是把故障和正常混在一起。
+
+**④ 一个反直觉的约束：写头之后状态码恒为 200**
+SSE 一旦写出第一个字节，HTTP 状态就定死了。所以真实错误码只能塞进 `error` 事件，
+前端**判成败只看有没有拿到 `done`**，不看 `res.status`。
+反过来说，校参、方法校验这些必须写在写头**之前**——那一步还能回真 400/405。
+
+> 🟢 **━━━━━━━ v2 新增 · 到此结束 ━━━━━━━**
+>
+> 下面回到 v1 原文。
+
+---
+
 ## 四、后端逐函数拆解
 
 ### 4.0 后端地图
 
-| 文件 | 行数 | 类型 | 一句话 |
-|---|---|---|---|
-| `api/health.js` | 64 | 路由 | 部署自检唯一入口 |
-| `api/result.js` | 253 | 路由 | 结果页聚合，最脆弱的接口 |
-| `api/calendar.js` | 142 | 路由 | 单月日历 + 可选判据 |
-| `api/subscriptions/index.js` | 230 | 路由 | 订阅的四个动词 |
-| `api/notifications.js` | 94 | 路由 | 通知记录只读 |
-| `api/settings.js` | 146 | 路由 | 配置读写 + 查询次数 |
-| `api/cron/check-prices.js` | 389 | 路由（被调度） | 每日比价 + 发信 |
-| `api/_supabase.js` | 37 | 零件 | 客户端单例 |
-| `api/_translate.js` | 63 | 零件 | 双向字段翻译 |
-| `api/_expire.js` | 77 | 零件 | 「今天」+ 过期标记 |
-| `api/_queryLog.js` | 76 | 零件 | 查询日志与统计 |
-| `api/_apify.js` | 232 | 零件 | 日历源 |
-| `api/_serp.js` | 280 | 零件 | 航班源 |
-| `api/_sky.js` | 199 | 零件 | 备用日历源 |
-| `api/_judge.js` | 169 | 零件 | 判据算法 |
-| `api/_compose.js` | 505 | 零件 | 结果组装（纯函数） |
-| `api/_mail.js` | 200 | 零件 | 发信 + 文案 |
-| `api/_subscriptionOps.js` | 182 | 零件 | 单条订阅删 / 改 |
+| 文件                         | 行数 | 类型           | 一句话                   |
+| ---------------------------- | ---- | -------------- | ------------------------ |
+| `api/health.js`              | 64   | 路由           | 部署自检唯一入口         |
+| `api/result.js`              | 253  | 路由           | 结果页聚合，最脆弱的接口 |
+| `api/calendar.js`            | 142  | 路由           | 单月日历 + 可选判据      |
+| `api/subscriptions/index.js` | 230  | 路由           | 订阅的四个动词           |
+| `api/notifications.js`       | 94   | 路由           | 通知记录只读             |
+| `api/settings.js`            | 146  | 路由           | 配置读写 + 查询次数      |
+| `api/cron/check-prices.js`   | 389  | 路由（被调度） | 每日比价 + 发信          |
+| `api/_supabase.js`           | 37   | 零件           | 客户端单例               |
+| `api/_translate.js`          | 63   | 零件           | 双向字段翻译             |
+| `api/_expire.js`             | 77   | 零件           | 「今天」+ 过期标记       |
+| `api/_queryLog.js`           | 76   | 零件           | 查询日志与统计           |
+| `api/_apify.js`              | 232  | 零件           | 日历源                   |
+| `api/_serp.js`               | 280  | 零件           | 航班源                   |
+| `api/_sky.js`                | 199  | 零件           | 备用日历源               |
+| `api/_judge.js`              | 169  | 零件           | 判据算法                 |
+| `api/_compose.js`            | 505  | 零件           | 结果组装（纯函数）       |
+| `api/_mail.js`               | 200  | 零件           | 发信 + 文案              |
+| `api/_subscriptionOps.js`    | 182  | 零件           | 单条订阅删 / 改          |
 
 ---
 
@@ -378,8 +446,8 @@ flyOrWait/
 
 #### `api/health.js`
 
-| 函数 | 职责 |
-|---|---|
+| 函数                | 职责                                                                                     |
+| ------------------- | ---------------------------------------------------------------------------------------- |
 | `handler(req, res)` | 只允许 GET；返回 `ok / service / runtime / time / identityId / env{8 个布尔} / dataMode` |
 
 **它在流程里的位置**：部署后第一个要打开的地址。它同时证明两件事——函数跑得起来（`api/` 目录被平台认了）、
@@ -390,13 +458,14 @@ flyOrWait/
 
 #### `api/result.js`
 
-| 函数 | 输入 → 输出 | 职责 |
-|---|---|---|
-| `localNow()` | — → `{iso, stamp}` | 东八区的「今天」与「此刻 HH:mm」，两者同源 |
-| `fail(res, e, what)` | 错误对象 | 消息含「缺少环境变量」→ 500/5000（我们的锅）；否则 502/5020（外部源的锅） |
-| `handler(req, res)` | query | 校参 → 两路并发 → 窗口校验 → 组装 → 回包 → 记账 |
+| 函数                 | 输入 → 输出        | 职责                                                                      |
+| -------------------- | ------------------ | ------------------------------------------------------------------------- |
+| `localNow()`         | — → `{iso, stamp}` | 东八区的「今天」与「此刻 HH:mm」，两者同源                                |
+| `fail(res, e, what)` | 错误对象           | 消息含「缺少环境变量」→ 500/5000（我们的锅）；否则 502/5020（外部源的锅） |
+| `handler(req, res)`  | query              | 校参 → 两路并发 → 窗口校验 → 组装 → 回包 → 记账                           |
 
 **校参顺序**（每一步都 return，后面不复判）：
+
 1. `from`/`to` 三位大写字母
 2. `from !== to`
 3. `flexibility ∈ {fixed, plus3, plus7, month}`
@@ -429,8 +498,8 @@ const [calR, flyR] = await Promise.allSettled([
 
 #### `api/calendar.js`
 
-| 函数 | 职责 |
-|---|---|
+| 函数                | 职责                                               |
+| ------------------- | -------------------------------------------------- |
 | `handler(req, res)` | 单月日历；可选 `date` 参数会额外挂一个 `judgement` |
 
 **为什么判据挂在这个接口上、不新开 `/api/judge`**：判据要吃的那份数据这个请求已经拿到了，
@@ -443,12 +512,12 @@ const [calR, flyR] = await Promise.allSettled([
 
 #### `api/subscriptions/index.js`
 
-| 函数 | 输入 → 输出 | 职责 |
-|---|---|---|
-| `sortForDisplay(rows)` | 行数组 → 原地排序 | active(0) → paused(1) → expired(2)；未知状态排最后（`?? 9`） |
-| `handler(req, res)` | — | 身份检查 → `?id=` 分支 → GET / POST → 405 |
-| `listSubscriptions(ownerId, res)` | — | 查库 → **标过期并写回** → 排序 → `map(toClient)` |
-| `createSubscription(ownerId, req, res)` | body | 必填校验 → 日期校验 → 舱位校验 → insert → 23505 翻 409 |
+| 函数                                    | 输入 → 输出       | 职责                                                         |
+| --------------------------------------- | ----------------- | ------------------------------------------------------------ |
+| `sortForDisplay(rows)`                  | 行数组 → 原地排序 | active(0) → paused(1) → expired(2)；未知状态排最后（`?? 9`） |
+| `handler(req, res)`                     | —                 | 身份检查 → `?id=` 分支 → GET / POST → 405                    |
+| `listSubscriptions(ownerId, res)`       | —                 | 查库 → **标过期并写回** → 排序 → `map(toClient)`             |
+| `createSubscription(ownerId, req, res)` | body              | 必填校验 → 日期校验 → 舱位校验 → insert → 23505 翻 409       |
 
 **`?id=` 分支的关键写法**：用 `Object.hasOwn(req.query, 'id')` 判「参数在不在」，
 不用真值判断——`?id=` 这种空值也该明确报「无效的订阅 ID」，而不是静默掉到 GET 列表去。
@@ -462,10 +531,10 @@ const [calR, flyR] = await Promise.allSettled([
 
 #### `api/notifications.js`
 
-| 函数 | 职责 |
-|---|---|
+| 函数                | 职责                                                                 |
+| ------------------- | -------------------------------------------------------------------- |
 | `handler(req, res)` | 只读；`limit 50`；select 里嵌套 `subscriptions(origin, destination)` |
-| `toClient(row)` | 快照优先 → join 兜底 → 空串兜底 |
+| `toClient(row)`     | 快照优先 → join 兜底 → 空串兜底                                      |
 
 **`toClient` 的三级兜底**：`row.origin ?? flight.origin ?? ''`。
 新数据靠自己的快照列（与订阅是否还在无关）；没有快照的老数据才退回 join；两边都没有给空串，
@@ -476,11 +545,11 @@ const [calR, flyR] = await Promise.allSettled([
 
 #### `api/settings.js`
 
-| 函数 | 职责 |
-|---|---|
-| `handler` | 身份检查 → GET / PUT |
+| 函数           | 职责                                                       |
+| -------------- | ---------------------------------------------------------- |
+| `handler`      | 身份检查 → GET / PUT                                       |
 | `readSettings` | `maybeSingle()`（0 行不是错误）→ 默认值兜底 → 本月查询次数 |
-| `saveSettings` | **部分更新**：只认「显式传了」的字段 → 校验 → upsert |
+| `saveSettings` | **部分更新**：只认「显式传了」的字段 → 校验 → upsert       |
 
 **`maybeSingle()` 而不是 `single()`**：`single()` 在 0 行时会报错，而「从没设置过」是正常状态。
 
@@ -502,8 +571,8 @@ upsert 一条语句表达「有就改、没有就建」，两次往返省成一�
 
 #### `api/_supabase.js`
 
-| 函数 | 职责 |
-|---|---|
+| 函数            | 职责                                                 |
+| --------------- | ---------------------------------------------------- |
 | `getSupabase()` | 惰性创建、之后复用；缺环境变量直接抛错交给上层兜 500 |
 
 关掉 `persistSession` / `autoRefreshToken`——没接 Supabase Auth，不需要任何会话状态。
@@ -511,9 +580,9 @@ upsert 一条语句表达「有就改、没有就建」，两次往返省成一�
 
 #### `api/_translate.js`
 
-| 函数 | 方向 | 关键点 |
-|---|---|---|
-| `toClient(row)` | 库 → 前端 | `origin→from`、`depart_date→departDate`、`last_checked_at→lastCheckedAt` |
+| 函数                      | 方向      | 关键点                                                                                     |
+| ------------------------- | --------- | ------------------------------------------------------------------------------------------ |
+| `toClient(row)`           | 库 → 前端 | `origin→from`、`depart_date→departDate`、`last_checked_at→lastCheckedAt`                   |
 | `toRow(payload, ownerId)` | 前端 → 库 | **`current_price` 初始化成 `basePrice`**；`status`/`created_at` 一律不传，交给数据库默认值 |
 
 **为什么必须有一层翻译**：`from` 是 SQL 保留字，列名只能叫 `origin`；列名是「存储视角」，
@@ -524,10 +593,10 @@ store 字段是「页面视角」，各自取最顺的名字。翻译只在这�
 
 #### `api/_expire.js`
 
-| 函数 | 职责 |
-|---|---|
-| `todayShanghai()` | **全项目唯一的「今天」** |
-| `isExpired(row, today)` | 还在盯（active/paused）且 `depart_date < today` |
+| 函数                    | 职责                                                                |
+| ----------------------- | ------------------------------------------------------------------- |
+| `todayShanghai()`       | **全项目唯一的「今天」**                                            |
+| `isExpired(row, today)` | 还在盯（active/paused）且 `depart_date < today`                     |
 | `markExpiredRows(rows)` | 先筛 id → 0 条不发写 → `.in('id', ids)` → **就地改内存里的 status** |
 
 **为什么 paused 也要标**：用户暂停的是一条「还会飞」的监控。航班飞走了这条同样作废；
@@ -539,11 +608,11 @@ store 字段是「页面视角」，各自取最顺的名字。翻译只在这�
 
 #### `api/_queryLog.js`
 
-| 函数 | 职责 |
-|---|---|
-| `monthRange()` | 东八区「本月」的 UTC 边界 + 本地月份标签 |
-| `logQuery(ownerId)` | 追加一行 |
-| `countQueries(ownerId, from, to)` | `count + head:true`，只要数字不要行 |
+| 函数                              | 职责                                     |
+| --------------------------------- | ---------------------------------------- |
+| `monthRange()`                    | 东八区「本月」的 UTC 边界 + 本地月份标签 |
+| `logQuery(ownerId)`               | 追加一行                                 |
+| `countQueries(ownerId, from, to)` | `count + head:true`，只要数字不要行      |
 
 **为什么是日志表而不是计数列**：计数列答不了「这个月」——跨月得写定时任务归零，多一个会忘的环节。
 日志表按 `queried_at` 一过滤自然就是本月，**零维护**。
@@ -554,15 +623,15 @@ store 字段是「页面视角」，各自取最顺的名字。翻译只在这�
 
 #### `api/_apify.js`
 
-| 函数 | 职责 |
-|---|---|
-| `apiToken()` | 缺 `APIFY_TOKEN` 直接抛错 |
-| `localToday()` | 转发到 `todayShanghai()`，**不另写一份** |
-| `replayEnabled()` | 在**函数内**读 `APIFY_REPLAY`（避免模块缓存读到旧值） |
-| `readSample(name)` | 找不到 / 结构不对 → **抛错**，绝不返回空数组 |
-| `normalize(items)` | 只留 `type==='calendar_day'` 且有正价的；`date → day`；按日期升序 |
-| `runActor({...})` | 拼参数 → `run-sync-get-dataset-items` → 解析 → 抛人能看懂的错 |
-| `getPriceCalendar({...})` | 回放 / 真机的唯一分叉点 |
+| 函数                      | 职责                                                              |
+| ------------------------- | ----------------------------------------------------------------- |
+| `apiToken()`              | 缺 `APIFY_TOKEN` 直接抛错                                         |
+| `localToday()`            | 转发到 `todayShanghai()`，**不另写一份**                          |
+| `replayEnabled()`         | 在**函数内**读 `APIFY_REPLAY`（避免模块缓存读到旧值）             |
+| `readSample(name)`        | 找不到 / 结构不对 → **抛错**，绝不返回空数组                      |
+| `normalize(items)`        | 只留 `type==='calendar_day'` 且有正价的；`date → day`；按日期升序 |
+| `runActor({...})`         | 拼参数 → `run-sync-get-dataset-items` → 解析 → 抛人能看懂的错     |
+| `getPriceCalendar({...})` | 回放 / 真机的唯一分叉点                                           |
 
 **`normalize` 里的字段翻译是刻意的**：Apify 叫 `date`，我们内部统一叫 `day`——
 这样 `api/_judge.js` 一行都不用改（它认的就是 `day`）。翻译只发生在这里。
@@ -573,36 +642,39 @@ store 字段是「页面视角」，各自取最顺的名字。翻译只在这�
 
 #### `api/_serp.js`
 
-| 函数 | 职责 |
-|---|---|
-| `apiKey()` | 缺 `SERPAPI_KEY` 直接抛错 |
-| `replayEnabled()` / `readSample()` | 同 Apify 那套纪律 |
-| `fmtDuration(minutes)` | 分 → `'8h45m'` |
-| `timeOf(dateTime)` | `'2026-11-12 07:00'` → `'07:00'`；取不到给空串 |
-| `toFlight(group, index)` | 一个方案 → 前端形状（**只翻译，不取舍**） |
-| `normalize(body)` | 拼 `best_flights + other_flights` → 排序 → 统计 `missing` |
-| `callSerp(params)` | 拼 URL、带 key、超时 20s、最多重试 1 次、**把三种失败分开** |
-| `searchFlights({...})` | 回放 / 真机的分叉点 |
+| 函数                               | 职责                                                        |
+| ---------------------------------- | ----------------------------------------------------------- |
+| `apiKey()`                         | 缺 `SERPAPI_KEY` 直接抛错                                   |
+| `replayEnabled()` / `readSample()` | 同 Apify 那套纪律                                           |
+| `fmtDuration(minutes)`             | 分 → `'8h45m'`                                              |
+| `timeOf(dateTime)`                 | `'2026-11-12 07:00'` → `'07:00'`；取不到给空串              |
+| `toFlight(group, index)`           | 一个方案 → 前端形状（**只翻译，不取舍**）                   |
+| `normalize(body)`                  | 拼 `best_flights + other_flights` → 排序 → 统计 `missing`   |
+| `callSerp(params)`                 | 拼 URL、带 key、超时 20s、最多重试 1 次、**把三种失败分开** |
+| `searchFlights({...})`             | 回放 / 真机的分叉点                                         |
 
 **`toFlight` 里两个细节**：
+
 - `id` 用每一段的航班号拼（`CZ3157-CA1301`），避免中转方案撞车；同一天同班号出现两次时补 `#2`
 - `durationMin` 单独留数字版——**不要在 `'8h45m'` 这种字符串上做解析**去算「中转多花多久」
 
 **`callSerp` 的三种失败判定**（这是 SerpApi 的脾气）：
+
 1. `!res.ok` → 5xx / 429 可重试，4xx 不重试（key 错、参数错，再试一样）
 2. `body.error` 存在 → 业务失败，不重试（额度用完 / 参数不对）
 3. `search_metadata.status !== 'Success'` → 可重试
-**只看 HTTP 200 就把结果当成功，是这里最容易犯的错。**
+   **只看 HTTP 200 就把结果当成功，是这里最容易犯的错。**
 
 #### `api/_judge.js`
 
-| 函数 | 输入 → 输出 | 职责 |
-|---|---|---|
-| `percentile(sorted, p)` | 已升序数组 + p → 数值 | 线性插值分位，**全项目唯一实现** |
-| `judgePrices(days, targetDate)` | 每日价格 + 目标日 | 判某一天贵不贵 |
-| `annotateDays(days)` | 每日价格 | 判每一天贵不贵（给日历上色） |
+| 函数                            | 输入 → 输出           | 职责                             |
+| ------------------------------- | --------------------- | -------------------------------- |
+| `percentile(sorted, p)`         | 已升序数组 + p → 数值 | 线性插值分位，**全项目唯一实现** |
+| `judgePrices(days, targetDate)` | 每日价格 + 目标日     | 判某一天贵不贵                   |
+| `annotateDays(days)`            | 每日价格              | 判每一天贵不贵（给日历上色）     |
 
 **`judgePrices` 的五个步骤**：
+
 1. **清洗**：丢掉没价 / 非正价的日子，按日期升序
 2. **样本门槛**：`< MIN_SAMPLE(14)` → `{available:false, reason:'insufficient_data'}`
 3. **目标日必须存在**：不在就分两种——`date_out_of_window`（真的超范围）vs `date_no_data`（窗口内缺这天）
@@ -619,6 +691,7 @@ store 字段是「页面视角」，各自取最顺的名字。翻译只在这�
 同一次请求里，日历的颜色和结论的档位出自同一个函数，**天然不会互相打架**。
 
 **百分位的两个必然特征（不是 bug）**：
+
 - 永远取不到 100：自己不会小于自己，最大只能到 `89/90 ≈ 99`
 - 并列最低也显示 0：严格小于计数忽略了「同样便宜」的那几天
 
@@ -629,24 +702,24 @@ store 字段是「页面视角」，各自取最顺的名字。翻译只在这�
 这是最大的零件（505 行），全部是纯函数、零网络。抽出来有三个好处：
 ① 可以拿 `samples/` 的真实响应离线跑；② 口径只有一处；③ `result.js` 只剩「校参 → 打两个源 → 交给它 → 回包」。
 
-| 函数 | 职责 |
-|---|---|
-| `shiftISO(iso, n)` | `'YYYY-MM-DD' ± n 天` |
-| `daysBetween(a, b)` | 相差几天 |
-| `fmtDuration(minutes)` | 分 → `'2h45m'` |
-| `short(iso)` | `'2026-11-12'` → `'11-12'` |
-| `yuan(n)` | `1839.54` → `'¥1,840'` |
-| `cheapestOf(arr)` | 最便宜的那个 |
-| `toCell(d)` | 一天 → 日历格（价格取整到元） |
-| `daysInMonth(label)` | 该月共几天 |
-| `toPlaceholderCell(iso)` | 「这天没报价」的占位格（`price/level = null`） |
-| `buildCalendarSection({days, month, date})` | **整段窗口 → 日历 + 判据** |
-| `buildTimingAnswer({...})` | 判据 → 答案② |
-| `scanPool(allDays, params)` | 按灵活度决定扫哪些天 |
-| `buildDateAnswer({...})` | 答案①（最优出发日） |
-| `buildHints({...})` | 延展建议（中转可省 / 灵活出发） |
-| `judgementReason(j, window)` | 判不了的时候，说清为什么 |
-| `composeResult({...})` | 总装，返回整页数据 |
+| 函数                                        | 职责                                           |
+| ------------------------------------------- | ---------------------------------------------- |
+| `shiftISO(iso, n)`                          | `'YYYY-MM-DD' ± n 天`                          |
+| `daysBetween(a, b)`                         | 相差几天                                       |
+| `fmtDuration(minutes)`                      | 分 → `'2h45m'`                                 |
+| `short(iso)`                                | `'2026-11-12'` → `'11-12'`                     |
+| `yuan(n)`                                   | `1839.54` → `'¥1,840'`                         |
+| `cheapestOf(arr)`                           | 最便宜的那个                                   |
+| `toCell(d)`                                 | 一天 → 日历格（价格取整到元）                  |
+| `daysInMonth(label)`                        | 该月共几天                                     |
+| `toPlaceholderCell(iso)`                    | 「这天没报价」的占位格（`price/level = null`） |
+| `buildCalendarSection({days, month, date})` | **整段窗口 → 日历 + 判据**                     |
+| `buildTimingAnswer({...})`                  | 判据 → 答案②                                   |
+| `scanPool(allDays, params)`                 | 按灵活度决定扫哪些天                           |
+| `buildDateAnswer({...})`                    | 答案①（最优出发日）                            |
+| `buildHints({...})`                         | 延展建议（中转可省 / 灵活出发）                |
+| `judgementReason(j, window)`                | 判不了的时候，说清为什么                       |
+| `composeResult({...})`                      | 总装，返回整页数据                             |
 
 **`buildCalendarSection` 里两处必须严格遵守的纪律**：
 
@@ -660,23 +733,24 @@ store 字段是「页面视角」，各自取最顺的名字。翻译只在这�
 `cheapestOf` 选中空格子（页面就会显示 ¥0）。
 
 **`composeResult` 里两个防编造的点**：
+
 - 一格报价都没有 → **抛错**，不硬凑一个「最便宜的格子」（那等于拿别的月份的数据冒充所选日期）
 - `selected` 必须从 `pricedCells` 里选，且 `calendarMarked` 的 `isSelected` 也要基于它——
   免得 `selected` 和日历里的同一格形状不一致（踩到时是「前端某处莫名 undefined」）
 
 #### `api/_mail.js`
 
-| 函数 | 职责 |
-|---|---|
-| `HOST()` / `PORT()` / `sender()` | 默认 `smtp.qq.com:465`，发件人默认 = 登录账号 |
-| `isMailConfigured()` | `MAIL_USER && MAIL_PASS`，health 与 Cron 共用 |
-| `transport()` | 惰性创建；缺变量**在这里就抛**，不等到发信那一刻才炸 |
-| `sendMail({to, subject, text})` | 发送 + **校验 `accepted` 非空** + 生成极简 HTML |
-| `prettyDate(iso)` | `'2026-11-18'` → `'11 月 18 日（周三）'`（按 UTC 解析、取 UTC 字段，绝不差一天） |
-| `routeLines(sub)` | 信里共用的航线信息几行 |
-| `buildPriceAlert(sub, price, siteUrl)` | 命中信文案 |
-| `buildDeadlineNotice(sub, price, siteUrl)` | 到期信文案（**不预测未来**） |
-| `textToHtml(text)` | 纯文本转义后拼段落，不引外部样式/图片（邮件客户端里才稳定） |
+| 函数                                       | 职责                                                                             |
+| ------------------------------------------ | -------------------------------------------------------------------------------- |
+| `HOST()` / `PORT()` / `sender()`           | 默认 `smtp.qq.com:465`，发件人默认 = 登录账号                                    |
+| `isMailConfigured()`                       | `MAIL_USER && MAIL_PASS`，health 与 Cron 共用                                    |
+| `transport()`                              | 惰性创建；缺变量**在这里就抛**，不等到发信那一刻才炸                             |
+| `sendMail({to, subject, text})`            | 发送 + **校验 `accepted` 非空** + 生成极简 HTML                                  |
+| `prettyDate(iso)`                          | `'2026-11-18'` → `'11 月 18 日（周三）'`（按 UTC 解析、取 UTC 字段，绝不差一天） |
+| `routeLines(sub)`                          | 信里共用的航线信息几行                                                           |
+| `buildPriceAlert(sub, price, siteUrl)`     | 命中信文案                                                                       |
+| `buildDeadlineNotice(sub, price, siteUrl)` | 到期信文案（**不预测未来**）                                                     |
+| `textToHtml(text)`                         | 纯文本转义后拼段落，不引外部样式/图片（邮件客户端里才稳定）                      |
 
 **`accepted` 为空必须抛错**：SMTP 收下了但服务器拒收这个收件人（地址不存在）——算成功的话，
 库里会写下一条假的「已通知」，之后幂等判断也会误判。
@@ -685,11 +759,11 @@ store 字段是「页面视角」，各自取最顺的名字。翻译只在这�
 
 #### `api/_subscriptionOps.js`
 
-| 函数 | 职责 |
-|---|---|
-| `removeSubscription(ownerId, id, res)` | 删除 + **`.select()` 判断真删到了** |
-| `pickPatch(payload)` | 白名单过滤（`threshold / email / deadline / status`） |
-| `patchError(patch)` | 值校验；`status` 只放行 `active/paused` |
+| 函数                                        | 职责                                                       |
+| ------------------------------------------- | ---------------------------------------------------------- |
+| `removeSubscription(ownerId, id, res)`      | 删除 + **`.select()` 判断真删到了**                        |
+| `pickPatch(payload)`                        | 白名单过滤（`threshold / email / deadline / status`）      |
+| `patchError(patch)`                         | 值校验；`status` 只放行 `active/paused`                    |
 | `updateSubscription(ownerId, id, req, res)` | 先读状态（404 / 拒绝 expired）→ 更新 → 再判 0 行（防竞态） |
 
 **删除为什么必须 `.select()`**：「删了 0 行」和「删成功了」在 PostgREST 里**都不是错误**。
@@ -711,36 +785,36 @@ store 字段是「页面视角」，各自取最顺的名字。翻译只在这�
 **常量**
 
 ```js
-const BUDGET_MS = 45_000;   // 从此刻起不再开始新的订阅（给写库与响应留 15s 余量）
-const PER_SUB_MS = 35_000;  // 单条最坏耗时：日历 20~60s + 发信 20s，保守按 35s 估
+const BUDGET_MS = 45_000; // 从此刻起不再开始新的订阅（给写库与响应留 15s 余量）
+const PER_SUB_MS = 35_000; // 单条最坏耗时：日历 20~60s + 发信 20s，保守按 35s 估
 ```
 
 **函数**
 
-| 函数 | 职责 |
-|---|---|
-| `diffDays(a, b)` | 纯日期字符串按 UTC 解析，不经过本地时区 |
-| `siteUrl(req)` | 站点地址：`SITE_URL` 优先，否则从 `x-forwarded-host` / `host` 拼 |
-| `findSentLog(subscriptionId)` | **幂等的唯一依据**：该订阅有没有 `send_status='sent'` 的行 |
-| `logNotice(row, price, kind, sendStatus, note)` | 写流水；航线走**快照列** |
-| `readNotifyEnabled(ownerId)` | 读邮件总开关；没行=默认开，报错=当关闭 |
-| `finish(row, notifiedAt)` | 标 `expired` + 记 `last_notified_at`，两件事必须一起做 |
-| `saveCurrentPrice(row, price)` | 回写 `current_price` + `last_checked_at` + `updated_at` |
-| `handleOne(row, today, summary, notify)` | **一条订阅的全流程**（见下） |
-| `logRunStart(dry)` | 插一条 `cron_log`，失败只 `console.error` |
-| `logRunEnd(id, {ok, summary, note})` | 收尾，失败只 `console.error` |
-| `handler(req, res)` | 鉴权 → 留痕 → 读订阅 → 循环 → 收尾 |
+| 函数                                            | 职责                                                             |
+| ----------------------------------------------- | ---------------------------------------------------------------- |
+| `diffDays(a, b)`                                | 纯日期字符串按 UTC 解析，不经过本地时区                          |
+| `siteUrl(req)`                                  | 站点地址：`SITE_URL` 优先，否则从 `x-forwarded-host` / `host` 拼 |
+| `findSentLog(subscriptionId)`                   | **幂等的唯一依据**：该订阅有没有 `send_status='sent'` 的行       |
+| `logNotice(row, price, kind, sendStatus, note)` | 写流水；航线走**快照列**                                         |
+| `readNotifyEnabled(ownerId)`                    | 读邮件总开关；没行=默认开，报错=当关闭                           |
+| `finish(row, notifiedAt)`                       | 标 `expired` + 记 `last_notified_at`，两件事必须一起做           |
+| `saveCurrentPrice(row, price)`                  | 回写 `current_price` + `last_checked_at` + `updated_at`          |
+| `handleOne(row, today, summary, notify)`        | **一条订阅的全流程**（见下）                                     |
+| `logRunStart(dry)`                              | 插一条 `cron_log`，失败只 `console.error`                        |
+| `logRunEnd(id, {ok, summary, note})`            | 收尾，失败只 `console.error`                                     |
+| `handler(req, res)`                             | 鉴权 → 留痕 → 读订阅 → 循环 → 收尾                               |
 
 **`handleOne` 的六个阶段**（顺序本身就是设计）：
 
-| 阶段 | 做什么 | 为什么在这个位置 |
-|---|---|---|
-| ① 幂等 + 自愈 | 有 `sent` 行就补状态、跳过 | 宁可第二天少发一封，不能给用户发两封一样的 |
-| ② 舱位护栏 | 非经济舱本轮跳过 | 拿经济舱分位给商务舱下结论就是错的 |
-| ③ 抓价 + 回写 | 窗口 = `diffDays(today, departDate)+1`；回写 `current_price` / `last_checked_at` | **没到价也要回写**，用户打开页面看到的是今天的价 |
-| ④ 判定 | `hit = price <= threshold`；`dueDeadline = deadline <= today` | 两者都不满足就什么都不做——这是最常见的一轮 |
-| ⑤ 邮件开关 | 关掉 → 记 `muted`，**不写 notify_log、不置 expired** | 订阅使命没结束，只是这封信先不发；重开后能补发 |
-| ⑥ dry / 真发 | dry 只记 `wouldSend`；真发 → 失败记 `failed` 保持 active，成功写 `sent` + `finish` | dry 必须在所有写操作之前分叉 |
+| 阶段          | 做什么                                                                             | 为什么在这个位置                                 |
+| ------------- | ---------------------------------------------------------------------------------- | ------------------------------------------------ |
+| ① 幂等 + 自愈 | 有 `sent` 行就补状态、跳过                                                         | 宁可第二天少发一封，不能给用户发两封一样的       |
+| ② 舱位护栏    | 非经济舱本轮跳过                                                                   | 拿经济舱分位给商务舱下结论就是错的               |
+| ③ 抓价 + 回写 | 窗口 = `diffDays(today, departDate)+1`；回写 `current_price` / `last_checked_at`   | **没到价也要回写**，用户打开页面看到的是今天的价 |
+| ④ 判定        | `hit = price <= threshold`；`dueDeadline = deadline <= today`                      | 两者都不满足就什么都不做——这是最常见的一轮       |
+| ⑤ 邮件开关    | 关掉 → 记 `muted`，**不写 notify_log、不置 expired**                               | 订阅使命没结束，只是这封信先不发；重开后能补发   |
+| ⑥ dry / 真发  | dry 只记 `wouldSend`；真发 → 失败记 `failed` 保持 active，成功写 `sent` + `finish` | dry 必须在所有写操作之前分叉                     |
 
 **`handler` 的骨架**
 
@@ -771,6 +845,86 @@ logRunEnd(ok:true, summary)
 
 ---
 
+### 4.4 callLLM · v2 读流
+
+> 🟢 **━━━━━━━ v2 新增 · 从这里开始 ━━━━━━━**
+>
+> 2026-11 流式改造加的内容，读完「到此结束」那条线就回到 v1 原文。
+
+`api/_agentRun.js` 里新加了三个私有函数（不导出），对外只有一个改动：`callLLM` 多了可选第 3 参。
+
+| 函数                                           | 一句话                            | 不许写错的点                   |
+| ---------------------------------------------- | --------------------------------- | ------------------------------ |
+| `readChatStream(res, {onDelta, onFirstChunk})` | 把一条 SSE 拼回非流式的 `message` | 每块先去掉 `\r`                |
+| `mergeToolCallDelta(slots, deltas)`            | 按 `index` 把 tool_calls 碎片归位 | `name` 用前缀判断，不是 `+=`   |
+| `callLLM(messages, llm, onDelta)`              | 双超时 + 把错误翻译成人话         | 两个 timer 都要在 `finally` 清 |
+
+#### ① `readChatStream`：五条纪律
+
+1. **每块 decode 后必须 `.replace(/\r/g, '')`**
+   SSE 规范允许 CRLF。留着 `\r`，`indexOf('\n\n')` 在 CRLF 服务端上永远切不到，
+   表现是「一个块都没收到」，而这跟「模型根本没回话」长得一模一样。
+   （JSON 字符串里的换行一定是转义的，删裸 `\r` 不会损坏内容。）
+2. **按 `\n\n` 切，不是按行切**
+   一个事件可能带 `event:` + 多行 `data:`；只认 `data:` 开头的行，其余（`: ping` 心跳）跳过。
+3. **单块 JSON 解析失败要 `continue`，不能 throw**
+   一个坏块不该毁掉整条流。但 `j.error` 必须 throw —— 那是模型真报错（余额、内容过滤）。
+4. **`[DONE]` 不是数据**
+   它是结束标记，没有 `choices`，跳过。开了 `include_usage` 后，最后一块是 `choices:[]` + 单独 `usage`，要单独捞。
+5. **不在这里翻译错误**
+   读流层分不清「首块没来」和「吐到一半停了」，这两种故障要说的话不一样。
+   统一抛给 `callLLM`，只有那里知道是哪个 timer 到的点。
+
+#### ② `mergeToolCallDelta`：为什么 name 不能用 `+=`
+
+三个字段的性格完全不同：
+
+| 字段        | 出现方式                               | 处理       |
+| ----------- | -------------------------------------- | ---------- |
+| `id`        | 第一块就完整                           | 只收第一次 |
+| `name`      | 第一块通常完整，**个别厂商会每块重发** | 前缀判断   |
+| `arguments` | 真的被切成 N 段                        | 必须 `+=`  |
+
+无脑 `+=` 撞上「重发型」厂商，工具名会变成 `judge_one_dayjudge_one_day`，
+工具表里查不到 → 这一轮直接废，**而且不报错**，只是答非所问。
+
+```js
+if (!slot.name) slot.name = name;
+else if (!slot.name.startsWith(name)) slot.name += name;
+```
+
+#### ③ `callLLM`：两个计时器 + 一次翻译
+
+```js
+const firstMs = Math.min(llm.firstTokenMs ?? 10_000, roundMs); // 不许比总时长还大
+const ctrl = new AbortController();
+let timedOut = null; // null | 'first' | 'round'
+```
+
+- 首块 timer：到点还没 `gotFirstChunk` → `timedOut='first'` + abort
+- 总时长 timer：到点 → `timedOut='round'` + abort
+- **两个都必须在 `finally` 里 `clearTimeout`**：Node 里活动的 `setTimeout` 会拖住事件循环，
+  线上表现为「响应已经结束、函数却不退出」，一直计费到 60s 硬顶
+
+`catch` 里只翻译 `timedOut` 有值的那两种。上游真报错（500、流内 error、非 JSON）原样往上抛 ——
+把「余额不足」说成「超时」，排查方向会整个跑偏。
+
+#### ④ 非流式兜底
+
+```js
+if (!ctype.includes('text/event-stream')) {
+  /* 当普通 JSON 解析 */
+}
+```
+
+换厂商或过代理时可能直接回一整段 JSON。这一条保证改造失败时退化成老路，而不是把整个 agent 拖死。
+
+> 🟢 **━━━━━━━ v2 新增 · 到此结束 ━━━━━━━**
+>
+> 下面回到 v1 原文。
+
+---
+
 ## 五、前端逐函数拆解
 
 ### 5.1 入口层
@@ -786,13 +940,13 @@ Element Plus 全量引入（没做按需，代价是包体，收益是零配置�
 
 #### `src/router/index.js`
 
-| 路由 | 名称 | 组件 |
-|---|---|---|
-| `/` | `discovery` | 查询页 |
-| `/result` | `result` | 结果页（不在 tab 里） |
-| `/mySubscribtion` | `mySubscribtion` | 我的订阅 |
-| `/setting` | `setting` | 设置 |
-| `/:pathMatch(.*)*` | — | redirect `/` |
+| 路由               | 名称             | 组件                  |
+| ------------------ | ---------------- | --------------------- |
+| `/`                | `discovery`      | 查询页                |
+| `/result`          | `result`         | 结果页（不在 tab 里） |
+| `/mySubscribtion`  | `mySubscribtion` | 我的订阅              |
+| `/setting`         | `setting`        | 设置                  |
+| `/:pathMatch(.*)*` | —                | redirect `/`          |
 
 **为什么要有兜底路由**：`createWebHistory` 下访问错路径匹配不到任何路由，`<router-view>` 渲染为空
 ——用户看到的是一片纯白，且不知道发生了什么。
@@ -801,16 +955,16 @@ Element Plus 全量引入（没做按需，代价是包体，收益是零配置�
 
 #### `src/views/index.vue`
 
-| 函数 / 变量 | 职责 |
-|---|---|
-| `QUERY_TAB` | `{ to:'/', label:'查询航班', match:['discovery','result'] }` |
-| `navs` | 三个 tab |
-| `LAST_PATH_KEY` | `sessionStorage` 的 key |
-| `lastQueryPath` | 上次停留在查询页 / 结果页的完整路径 |
-| `watch(route.fullPath)` | 停在查询/结果页就记下来 |
-| `isActive(nav)` | tab 高亮 |
-| `tabTarget(nav)` | 「查询航班」回到上次落点；其他 tab 正常跳 |
-| `goHome()` | 点 logo **刻意不复用**落点记忆——logo 是「回主页」 |
+| 函数 / 变量             | 职责                                                         |
+| ----------------------- | ------------------------------------------------------------ |
+| `QUERY_TAB`             | `{ to:'/', label:'查询航班', match:['discovery','result'] }` |
+| `navs`                  | 三个 tab                                                     |
+| `LAST_PATH_KEY`         | `sessionStorage` 的 key                                      |
+| `lastQueryPath`         | 上次停留在查询页 / 结果页的完整路径                          |
+| `watch(route.fullPath)` | 停在查询/结果页就记下来                                      |
+| `isActive(nav)`         | tab 高亮                                                     |
+| `tabTarget(nav)`        | 「查询航班」回到上次落点；其他 tab 正常跳                    |
+| `goHome()`              | 点 logo **刻意不复用**落点记忆——logo 是「回主页」            |
 
 **它解决的问题**：在结果页 → 点「我的订阅」→ 再点「查询航班」，会掉回查询表单，上次的结果找不回来。
 记在 `sessionStorage`，刷新也不丢。
@@ -819,12 +973,12 @@ Element Plus 全量引入（没做按需，代价是包体，收益是零配置�
 
 #### `src/api/index.js`
 
-| 导出 / 逻辑 | 职责 |
-|---|---|
-| `http` | axios 实例，`baseURL:'/api'`（同源，无跨域），`timeout:65000` |
-| 请求拦截器 | 每个请求注入 `X-Owner-Id` |
+| 导出 / 逻辑        | 职责                                                           |
+| ------------------ | -------------------------------------------------------------- |
+| `http`             | axios 实例，`baseURL:'/api'`（同源，无跨域），`timeout:65000`  |
+| 请求拦截器         | 每个请求注入 `X-Owner-Id`                                      |
 | 响应拦截器（成功） | `code !== 0` 也当失败抛（兜底：万一哪个接口漏改返回 200+非 0） |
-| 响应拦截器（失败） | 归一化成 `{code, message, status}`；无响应 → `code:-1` |
+| 响应拦截器（失败） | 归一化成 `{code, message, status}`；无响应 → `code:-1`         |
 
 **`baseURL` 写相对路径 `/api` 的意义**：前端与函数同源，不需要写任何域名，也就不存在跨域。
 本地由 vite 代理转发，线上由 Vercel 直接接管——**本地 / 线上代码完全一致**。
@@ -838,8 +992,8 @@ Element Plus 全量引入（没做按需，代价是包体，收益是零配置�
 
 #### `src/api/identity.js`
 
-| 函数 | 职责 |
-|---|---|
+| 函数              | 职责                                         |
+| ----------------- | -------------------------------------------- |
 | `getIdentityId()` | 现在永远返回 `'owner'`；将来接登录只改这一行 |
 
 **为什么是固定 `'owner'` 而不是每台设备一个 UUID**：那样换设备 / 清缓存就看不到自己的订阅。
@@ -849,10 +1003,10 @@ Element Plus 全量引入（没做按需，代价是包体，收益是零配置�
 
 #### `src/data/airports.js`
 
-| 导出 | 职责 |
-|---|---|
-| `AIRPORTS` | 21 个（18 国内 + HKG/MFM/TPE） |
-| `findAirport(code)` | 按三字码查，找不到返回 `undefined` |
+| 导出                 | 职责                                      |
+| -------------------- | ----------------------------------------- |
+| `AIRPORTS`           | 21 个（18 国内 + HKG/MFM/TPE）            |
+| `findAirport(code)`  | 按三字码查，找不到返回 `undefined`        |
 | `airportLabel(code)` | `'SZX'` → `'深圳 SZX'`；查不到返回原 code |
 
 ⚠️ 查表渲染一律要 `?? code` 兜底，否则表里没有的 code 会让文案**静默变空白**（坑 #16）。
@@ -861,12 +1015,12 @@ Element Plus 全量引入（没做按需，代价是包体，收益是零配置�
 
 #### `src/stores/result.js`
 
-| 状态 / 方法 | 说明 |
-|---|---|
-| `data` | 结果页全部数据（形状由 `composeResult` 决定） |
-| `loading` | 首次查询 20~60 秒，页面必须整屏显示等待态 |
-| `error` | 后端那句能看懂的中文，原样展示 |
-| `fetchResult(query)` | 先清空 `data` 再查 |
+| 状态 / 方法          | 说明                                          |
+| -------------------- | --------------------------------------------- |
+| `data`               | 结果页全部数据（形状由 `composeResult` 决定） |
+| `loading`            | 首次查询 20~60 秒，页面必须整屏显示等待态     |
+| `error`              | 后端那句能看懂的中文，原样展示                |
+| `fetchResult(query)` | 先清空 `data` 再查                            |
 
 **和 `subscriptions` store 的区别（刻意不照抄）**：那个是长期存在的资源，写方法把错误**抛给调用方**；
 这里是一次性查询，`loading/success/error` 本身就是整屏 UI，**没有一个「调用方还要再决定」的余地**
@@ -879,17 +1033,17 @@ Element Plus 全量引入（没做按需，代价是包体，收益是零配置�
 
 #### `src/stores/settings.js`
 
-| 状态 / 方法 | 说明 |
-|---|---|
-| `email` | 默认通知邮箱 |
-| `emailNotify` | 邮件总开关 |
-| `queryCount` / `month` | 服务端统计，前端算不出来也不该算 |
-| `loaded` | 「已从后端取过一轮」——结果页据此判断能不能拿 email 初始化表单 |
-| `error` | 最近一次同步失败原因（**不抛给页面**） |
-| `saving` | 保存中（给输入框禁用态） |
-| `fetchSettings()` | 失败不抛，记 `error`；**无论成败都置 `loaded=true`** |
-| `saveSettings(patch)` | PUT 后用后端回传覆盖本地 |
-| `applySettings(data)` | 读与写共用，防止两处字段映射漂移 |
+| 状态 / 方法            | 说明                                                          |
+| ---------------------- | ------------------------------------------------------------- |
+| `email`                | 默认通知邮箱                                                  |
+| `emailNotify`          | 邮件总开关                                                    |
+| `queryCount` / `month` | 服务端统计，前端算不出来也不该算                              |
+| `loaded`               | 「已从后端取过一轮」——结果页据此判断能不能拿 email 初始化表单 |
+| `error`                | 最近一次同步失败原因（**不抛给页面**）                        |
+| `saving`               | 保存中（给输入框禁用态）                                      |
+| `fetchSettings()`      | 失败不抛，记 `error`；**无论成败都置 `loaded=true`**          |
+| `saveSettings(patch)`  | PUT 后用后端回传覆盖本地                                      |
+| `applySettings(data)`  | 读与写共用，防止两处字段映射漂移                              |
 
 **为什么 `loaded` 在 `finally` 里置位**：否则网络坏掉时结果页会永远空等一个邮箱。
 拿不到就用默认值（空邮箱）——至少页面可操作，用户能自己填。
@@ -899,26 +1053,27 @@ Element Plus 全量引入（没做按需，代价是包体，收益是零配置�
 
 #### `src/stores/subscriptions.js`
 
-| 状态 / 方法 | 说明 |
-|---|---|
-| `items` | 订阅列表，**唯一来源是后端** |
-| `logs` | 通知流水 |
-| `loading` | 与后端同步中（进页面拉取、写完重拉都算） |
-| `fetchSubscriptions()` | 整体覆盖；**抛错给调用方** |
-| `fetchLogs()` | **刻意不动 `loading`** |
-| `writeAndSync(request, {refreshLogs})` | 写 → 重拉 → 覆盖 |
-| `findDuplicate({from,to,departDate,email})` | 本地先判重 |
-| `addSubscription(payload)` | 两层防重，返回 `{ok}` |
-| `oneUrl(id)` | `/subscriptions?id=<uuid>`，集中一处拼 |
-| `removeSubscription(id)` | DELETE + 顺带刷记录 |
-| `toggleStatus(id)` | 目标值由当前状态推出；`expired` 直接抛错 |
-| `updateSubscription(id, patch)` | PATCH 白名单 |
+| 状态 / 方法                                 | 说明                                     |
+| ------------------------------------------- | ---------------------------------------- |
+| `items`                                     | 订阅列表，**唯一来源是后端**             |
+| `logs`                                      | 通知流水                                 |
+| `loading`                                   | 与后端同步中（进页面拉取、写完重拉都算） |
+| `fetchSubscriptions()`                      | 整体覆盖；**抛错给调用方**               |
+| `fetchLogs()`                               | **刻意不动 `loading`**                   |
+| `writeAndSync(request, {refreshLogs})`      | 写 → 重拉 → 覆盖                         |
+| `findDuplicate({from,to,departDate,email})` | 本地先判重                               |
+| `addSubscription(payload)`                  | 两层防重，返回 `{ok}`                    |
+| `oneUrl(id)`                                | `/subscriptions?id=<uuid>`，集中一处拼   |
+| `removeSubscription(id)`                    | DELETE + 顺带刷记录                      |
+| `toggleStatus(id)`                          | 目标值由当前状态推出；`expired` 直接抛错 |
+| `updateSubscription(id, patch)`             | PATCH 白名单                             |
 
 **`fetchLogs` 为什么不动 `loading`**：它和 `fetchSubscriptions` 是并行发的两个请求，
 谁先回来都把 `loading` 置 false 的话，另一个还在路上页面就提前撤掉转圈了。
 `loading` 只归「主内容」（订阅列表）管。
 
 **`writeAndSync` 为什么两层 try**：
+
 - 外层 = 写请求失败（真·操作失败，交给调用方翻译，比如 4090 = 重复订阅）
 - 内层 = 写**已经成功**、只是紧接着的刷新失败。这时必须说「操作已完成」，
   否则页面会报「操作失败」——**那是反向的谎**（明明存上了却说没存上）
@@ -933,24 +1088,24 @@ Element Plus 全量引入（没做按需，代价是包体，收益是零配置�
 
 #### `src/views/powerTabs/discovery.vue`
 
-| 函数 / 变量 | 职责 |
-|---|---|
-| `FLEX_OPTIONS` | 固定 / ±3 / ±7 / 整月最优 |
-| `HOT_ROUTES` | 4 条热门航线（点击**只回填**，不触发查询） |
-| `form` | 表单草稿 |
-| `isRound` | 是否往返 |
-| `dateLocked` | 整月最优时日期框灰显 |
-| `flexOptions` | 往返时锁死「固定日期」 |
-| `pickFlex(f)` | 禁用项直接 return |
-| `watch(isRound)` | 切往返 → 回落 fixed；切回单程 → 清返回日期 |
-| `todayZero` / `disabledDate(date)` | 禁用过去日期 |
-| `toQuery()` | 表单 → URL query（空值不传） |
-| `validate()` | 前端体验校验 |
-| `handleSearch()` | 校验 + `router.push` |
-| `pickHotRoute(route)` | 只回填 |
-| `swapCities()` | 交换出发地/目的地 |
-| `onPassengersChange(val)` | 兜底到 1~9 整数 |
-| `onMounted` | 从 URL 回填（结果页点「修改」回来时） |
+| 函数 / 变量                        | 职责                                       |
+| ---------------------------------- | ------------------------------------------ |
+| `FLEX_OPTIONS`                     | 固定 / ±3 / ±7 / 整月最优                  |
+| `HOT_ROUTES`                       | 4 条热门航线（点击**只回填**，不触发查询） |
+| `form`                             | 表单草稿                                   |
+| `isRound`                          | 是否往返                                   |
+| `dateLocked`                       | 整月最优时日期框灰显                       |
+| `flexOptions`                      | 往返时锁死「固定日期」                     |
+| `pickFlex(f)`                      | 禁用项直接 return                          |
+| `watch(isRound)`                   | 切往返 → 回落 fixed；切回单程 → 清返回日期 |
+| `todayZero` / `disabledDate(date)` | 禁用过去日期                               |
+| `toQuery()`                        | 表单 → URL query（空值不传）               |
+| `validate()`                       | 前端体验校验                               |
+| `handleSearch()`                   | 校验 + `router.push`                       |
+| `pickHotRoute(route)`              | 只回填                                     |
+| `swapCities()`                     | 交换出发地/目的地                          |
+| `onPassengersChange(val)`          | 兜底到 1~9 整数                            |
+| `onMounted`                        | 从 URL 回填（结果页点「修改」回来时）      |
 
 **它只做三件事**：校验、拼 query、跳转。**不发起查询**——查询由结果页打后端，
 这样刷新结果页还能重放，次数也由后端记账。
@@ -960,39 +1115,39 @@ Element Plus 全量引入（没做按需，代价是包体，收益是零配置�
 
 #### `src/views/powerTabs/result.vue`
 
-| 函数 / 变量 | 职责 |
-|---|---|
-| `params` | 从 URL query 读出查询条件 |
-| `currentQuery()` | 当前条件 → 后端参数（「发起查询」与「回查询页修改」共用） |
-| `cabinLabel` | 舱位 → 中文 |
-| `data` / `loading` / `error` | 三个 computed 直接代理 store |
-| `elapsed` / `ticker` | 已等待秒数（静止的转圈会让人怀疑卡死） |
-| `reload()` | 查一次（进页面 + 重试都是它）；计时器只覆盖本次请求 |
-| `onMounted` | 并行：拉设置 + 起查询 |
-| `onUnmounted` | 清计时器 |
-| `watchTitle` | 「等」时是三件套，「买」时是兜底方案 |
-| `noticeList` | 后端 `notices` 原样转达（排除 `judgement`，那句在答案②里说） |
-| `pickedId` / `pickedFlight` | 盯哪一班 |
-| `togglePick(flight)` | 换盯价基准；列表高亮 + 卡片回填已是反馈，不再弹提示 |
-| `threshold` | 阈值；盯了航班用「该航班价 × 0.95」，否则用后端建议值 |
-| `email` | 默认回填设置里的邮箱 |
-| `watch(pickedFlight)` | 换航班 → 阈值跟着走 |
-| `toISODate(d)` / `todayISO` | 本地今天 |
-| `recommendedDeadline` | 系统推荐（出发日 − 21 天），**若已过期落到今天** |
-| `deadline` / `isRecommendedDeadline` | 用户可改；改完不再是推荐值 → 「推荐」标签消失 |
-| `watch(data, {immediate:true})` | **数据一到就补阈值与截止日初值** |
-| `departISO` | 出发日（整月最优时即后端挑的最优日） |
-| `disableDeadline(date)` | 今天之前、出发日之后禁用 |
-| `withWeekday(dateStr)` | `'2026-11-18'` → `'2026-11-18 周三'` |
-| `calendarOffset` | 1 号对齐到正确的星期列（周一开头） |
-| `LEVEL_COLOR` / `priceColor(level)` | 档位 → 颜色；`null` → 中性灰 |
-| `cellPrice(c)` | `null` → `'—'`，否则 `¥1.54k` |
-| `handleEdit()` | 回查询页并带上当前条件 |
-| `goSetting()` | 去设置页 |
-| `askGoSubscriptions()` | 订阅成功后问一句要不要去看 |
-| `validateSubscribe()` | 只查用户真会填错的字段（阈值可被删空、邮箱可留空或写错） |
-| `subscribing` | 提交中（只关按钮，不影响整页） |
-| `handleSubscribe()` | 入口二次拦截 → 校验 → POST → `finally` 复位 → 弹窗 |
+| 函数 / 变量                          | 职责                                                         |
+| ------------------------------------ | ------------------------------------------------------------ |
+| `params`                             | 从 URL query 读出查询条件                                    |
+| `currentQuery()`                     | 当前条件 → 后端参数（「发起查询」与「回查询页修改」共用）    |
+| `cabinLabel`                         | 舱位 → 中文                                                  |
+| `data` / `loading` / `error`         | 三个 computed 直接代理 store                                 |
+| `elapsed` / `ticker`                 | 已等待秒数（静止的转圈会让人怀疑卡死）                       |
+| `reload()`                           | 查一次（进页面 + 重试都是它）；计时器只覆盖本次请求          |
+| `onMounted`                          | 并行：拉设置 + 起查询                                        |
+| `onUnmounted`                        | 清计时器                                                     |
+| `watchTitle`                         | 「等」时是三件套，「买」时是兜底方案                         |
+| `noticeList`                         | 后端 `notices` 原样转达（排除 `judgement`，那句在答案②里说） |
+| `pickedId` / `pickedFlight`          | 盯哪一班                                                     |
+| `togglePick(flight)`                 | 换盯价基准；列表高亮 + 卡片回填已是反馈，不再弹提示          |
+| `threshold`                          | 阈值；盯了航班用「该航班价 × 0.95」，否则用后端建议值        |
+| `email`                              | 默认回填设置里的邮箱                                         |
+| `watch(pickedFlight)`                | 换航班 → 阈值跟着走                                          |
+| `toISODate(d)` / `todayISO`          | 本地今天                                                     |
+| `recommendedDeadline`                | 系统推荐（出发日 − 21 天），**若已过期落到今天**             |
+| `deadline` / `isRecommendedDeadline` | 用户可改；改完不再是推荐值 → 「推荐」标签消失                |
+| `watch(data, {immediate:true})`      | **数据一到就补阈值与截止日初值**                             |
+| `departISO`                          | 出发日（整月最优时即后端挑的最优日）                         |
+| `disableDeadline(date)`              | 今天之前、出发日之后禁用                                     |
+| `withWeekday(dateStr)`               | `'2026-11-18'` → `'2026-11-18 周三'`                         |
+| `calendarOffset`                     | 1 号对齐到正确的星期列（周一开头）                           |
+| `LEVEL_COLOR` / `priceColor(level)`  | 档位 → 颜色；`null` → 中性灰                                 |
+| `cellPrice(c)`                       | `null` → `'—'`，否则 `¥1.54k`                                |
+| `handleEdit()`                       | 回查询页并带上当前条件                                       |
+| `goSetting()`                        | 去设置页                                                     |
+| `askGoSubscriptions()`               | 订阅成功后问一句要不要去看                                   |
+| `validateSubscribe()`                | 只查用户真会填错的字段（阈值可被删空、邮箱可留空或写错）     |
+| `subscribing`                        | 提交中（只关按钮，不影响整页）                               |
+| `handleSubscribe()`                  | 入口二次拦截 → 校验 → POST → `finally` 复位 → 弹窗           |
 
 **三态互斥且必须相邻**（`v-if` / `v-else-if` / `v-else-if`）：
 ① 查询中 ② 查询失败 ③ 有数据。「进页面先看到等待态」不是优化，是**必须**——
@@ -1015,23 +1170,23 @@ Element Plus 全量引入（没做按需，代价是包体，收益是零配置�
 
 #### `src/views/powerTabs/mySubscribtion.vue`
 
-| 函数 / 变量 | 职责 |
-|---|---|
-| `money(n)` | `¥1,540` |
-| `timeText(iso)` | UTC ISO → 浏览器本地 `MM-DD HH:mm` |
-| `LOG_STATUS_TEXT` / `logStatusText(s)` | `sent → 已通知`、`failed → 通知失败` |
-| `SUB_STATUS` / `subStatus(sub)` | 状态 → 中文 + badge 类；`expired` 靠 `lastNotified` 二分 |
-| `onMounted` | `Promise.allSettled` 并行拉列表 + 记录；**两个都挂只弹一条** |
-| `editingId` / `draft` | **显式编辑态**，草稿独立 |
-| `setFirstInput(el)` | v-for 里用函数式 ref 才拿得到控件 |
-| `startEdit(s)` | 填草稿 → `nextTick` → 聚焦并全选 |
-| `cancelEdit()` | 丢掉草稿、回只读（`s` 从头到尾没被改过） |
-| `draftError()` | 阈值 / 邮箱 / 截止日校验 |
-| `saveEdit(s)` | 校验 → PATCH → 成功才退出编辑态并提示 |
-| `disableDeadline(s)` | 按 id 缓存禁用函数 |
-| `toggleStatus(s)` | 方向在 `await` **之前**记下（请求成功后 store 会就地改 `s.status`） |
-| `confirmRemove(s)` | 确认 → DELETE → 成功提示 |
-| `goQuery()` | 去查询页 |
+| 函数 / 变量                            | 职责                                                                |
+| -------------------------------------- | ------------------------------------------------------------------- |
+| `money(n)`                             | `¥1,540`                                                            |
+| `timeText(iso)`                        | UTC ISO → 浏览器本地 `MM-DD HH:mm`                                  |
+| `LOG_STATUS_TEXT` / `logStatusText(s)` | `sent → 已通知`、`failed → 通知失败`                                |
+| `SUB_STATUS` / `subStatus(sub)`        | 状态 → 中文 + badge 类；`expired` 靠 `lastNotified` 二分            |
+| `onMounted`                            | `Promise.allSettled` 并行拉列表 + 记录；**两个都挂只弹一条**        |
+| `editingId` / `draft`                  | **显式编辑态**，草稿独立                                            |
+| `setFirstInput(el)`                    | v-for 里用函数式 ref 才拿得到控件                                   |
+| `startEdit(s)`                         | 填草稿 → `nextTick` → 聚焦并全选                                    |
+| `cancelEdit()`                         | 丢掉草稿、回只读（`s` 从头到尾没被改过）                            |
+| `draftError()`                         | 阈值 / 邮箱 / 截止日校验                                            |
+| `saveEdit(s)`                          | 校验 → PATCH → 成功才退出编辑态并提示                               |
+| `disableDeadline(s)`                   | 按 id 缓存禁用函数                                                  |
+| `toggleStatus(s)`                      | 方向在 `await` **之前**记下（请求成功后 store 会就地改 `s.status`） |
+| `confirmRemove(s)`                     | 确认 → DELETE → 成功提示                                            |
+| `goQuery()`                            | 去查询页                                                            |
 
 **`subStatus` 为什么必须传整条订阅**：`expired` 的文案还要看 `lastNotified`。
 模板里写 `subStatus(s)`，**不要写成 `subStatus(s.status)`**——那样永远拿不到 `lastNotified`，
@@ -1049,18 +1204,18 @@ Element Plus 全量引入（没做按需，代价是包体，收益是零配置�
 
 #### `src/views/powerTabs/setting.vue`
 
-| 函数 / 变量 | 职责 |
-|---|---|
-| `loading` | 首屏读取中，读完才撤遮罩（避免先闪一遍默认值） |
-| `savingEmail` | 邮箱单独的保存中标记（store 的 `saving` 是开关和邮箱共用的） |
-| `email` | 邮箱草稿（回车 / 失焦即存） |
-| `syncDraft()` | 后端拉回来的邮箱到了就填，用户已经在敲则不覆盖 |
-| `EMAIL_RE` | 校验与「状态字」共用同一个正则 |
-| `saveEmail()` | 格式校验 → 没改就不请求 → 保存 |
-| `resetEmail()` | 只把草稿退回库里的值，**不发请求** |
-| `mailHint` | 输入框下面那行状态字（已保存 / 保存中 / 格式不正确 / 离开后自动保存） |
-| `saveNotify(value)` | 拨动即存；**失败把开关拨回去** |
-| `onMounted` | 拉配置 → 回填草稿 → 撤遮罩（无论成败） |
+| 函数 / 变量         | 职责                                                                  |
+| ------------------- | --------------------------------------------------------------------- |
+| `loading`           | 首屏读取中，读完才撤遮罩（避免先闪一遍默认值）                        |
+| `savingEmail`       | 邮箱单独的保存中标记（store 的 `saving` 是开关和邮箱共用的）          |
+| `email`             | 邮箱草稿（回车 / 失焦即存）                                           |
+| `syncDraft()`       | 后端拉回来的邮箱到了就填，用户已经在敲则不覆盖                        |
+| `EMAIL_RE`          | 校验与「状态字」共用同一个正则                                        |
+| `saveEmail()`       | 格式校验 → 没改就不请求 → 保存                                        |
+| `resetEmail()`      | 只把草稿退回库里的值，**不发请求**                                    |
+| `mailHint`          | 输入框下面那行状态字（已保存 / 保存中 / 格式不正确 / 离开后自动保存） |
+| `saveNotify(value)` | 拨动即存；**失败把开关拨回去**                                        |
+| `onMounted`         | 拉配置 → 回填草稿 → 撤遮罩（无论成败）                                |
 
 **为什么加一行状态字而不是「编辑/保存/取消」三个按钮**：自动保存最大的毛病是「存没存上，界面看不出来」。
 一行小字 + 一个「重置」，已经答了「我改错了想反悔」和「到底存上没」。
@@ -1073,28 +1228,103 @@ Element Plus 全量引入（没做按需，代价是包体，收益是零配置�
 
 ---
 
+### 5.5 打字机 · v2
+
+> 🟢 **━━━━━━━ v2 新增 · 从这里开始 ━━━━━━━**
+>
+> 2026-11 流式改造加的内容，读完「到此结束」那条线就回到 v1 原文。
+
+前端要干的事只有一件：**把后端吐出来的碎片变成屏幕上能读的字**。三段代码接力。
+
+#### ① `src/api/agentStream.js::streamAgent` —— 手写解析
+
+async generator，`for await` 一次拿一个事件。不引 `eventsource-parser`：协议就三行
+（`data: ` 前缀、`\n\n` 分隔、`[DONE]` 结束）。
+
+**★ 空闲超时用 `Promise.race`，不能只挂 `ctrl.abort()`**
+abort 让读端报错是一条**间接**链路，实测踩过：计时器到点了，读的那一端毫无反应，
+界面永远停在最后一个阶段标签上。race 是直接的，到点必然 reject。abort 仍保留，作用是尽早释放连接。
+
+**★ 判成败只看有没有拿到 `done`**
+写头之后 `res.status` 恒为 200（见 3.4 ④），`status` 在这里没有判断价值。
+
+**★ 写头之前的失败，仍是真实状态码**：body 还是 `{code,message,data}`，
+连 `data.conversationId` 都有 —— 接住它，重试才不会裂成两个会话。
+
+#### ② `src/stores/agent.js::makeTyping(reply)` —— 节流渲染
+
+```js
+function makeTyping(reply) {
+  let raw = '';          // 原文只活在这个闭包里
+  let last = 0;          // 上次解析的时刻
+  let pending = null;    // 挂起的尾部定时器
+  ...
+}
+```
+
+三件事，**顺序不能反**：
+
+| 方法         | 干什么                                 | 写错的后果                                            |
+| ------------ | -------------------------------------- | ----------------------------------------------------- |
+| `push(text)` | 攒进 `raw`，按 50ms **尾部**节流重解析 | 用「丢掉超额块」的节流 ⇒ 最后一块永远不显示，停在半截 |
+| `cancel()`   | 清掉挂起的定时器                       | 不调就覆盖 `done` ⇒ 50ms 的尾巴会把 blocks 写回旧原文 |
+| `retract()`  | 清空 `raw` + `reply.blocks = []`       | 这一轮其实要调工具，刚才那几个字不是答案              |
+
+**为什么 `raw` 不放进 store**：它只是渲染的中间产物，权威值是 `done.answer`。
+放进响应式就多了一份可能和库不一致的数据。
+
+**为什么 `settle()` 要保住半截而不是清空**：出错时字蹦出来又消失，
+比压根没显示更让人怀疑页面坏了。
+
+#### ③ `ask()` 里的消费顺序
+
+```
+meta     → 认下 conversationId（不刷列表，断线也可能收不到 done）
+stage    → reply.stage = label（工具名→人话的映射在后端）
+delta    → typing.push(text)
+retract  → typing.retract()
+done     → ① typing.cancel()  ② reply.blocks = toBlocks(done.answer)
+```
+
+① 和 ② 的顺序是硬约束，反了就是「答案整体覆盖之后又被旧原文盖回去」，
+而且**完全静默**——界面只是停在少几个字的地方，没有任何报错。
+
+#### ④ 两个 UI 上的连带改动（不是可有可无）
+
+- **`MessageBubble.vue` 加了 `.bot-main` 包裹层**（把状态行挪到气泡上方）。
+  代价：气泡的 `max-width:78%` 原本相对 `.row`，现在相对那一列，实际宽度少约 40px。
+  包裹层必须带 `min-width:0`，否则 flex 子项默认 `min-width:auto`，长串不可断字符会撑破容器。
+- **`ask.vue` 打字时只在「距底 < 80px」才跟随滚动**。否则用户往上翻历史，
+  每一块 delta 都会把他拽回底部。
+
+> 🟢 **━━━━━━━ v2 新增 · 到此结束 ━━━━━━━**
+>
+> 下面回到 v1 原文。
+
+---
+
 ## 六、数据模型
 
 ### 6.1 五张表
 
-| 表 | 一行是什么 | 谁写 | 谁读 |
-|---|---|---|---|
-| `subscriptions` | 一个盯价任务 | `POST` / `PATCH`、Cron、`_expire` | 列表、Cron |
-| `notify_log` | 一封真的发出去的信 | Cron | 通知记录页 |
-| `user_settings` | 一个人的配置（一人一行） | `PUT /settings` | 设置页、Cron |
-| `query_log` | 一次查询 | `result.js`（不 await） | 设置页统计 |
-| `cron_log` | 一轮 Cron 运行 | Cron | 排错 |
+| 表              | 一行是什么               | 谁写                              | 谁读         |
+| --------------- | ------------------------ | --------------------------------- | ------------ |
+| `subscriptions` | 一个盯价任务             | `POST` / `PATCH`、Cron、`_expire` | 列表、Cron   |
+| `notify_log`    | 一封真的发出去的信       | Cron                              | 通知记录页   |
+| `user_settings` | 一个人的配置（一人一行） | `PUT /settings`                   | 设置页、Cron |
+| `query_log`     | 一次查询                 | `result.js`（不 await）           | 设置页统计   |
+| `cron_log`      | 一轮 Cron 运行           | Cron                              | 排错         |
 
 **`subscriptions` 关键列**
 
-| 列 | 说明 |
-|---|---|
-| `origin` / `destination` | 不用 `from`/`to`——`from` 是 SQL 保留字 |
-| `base_price` | 订阅那一刻的价格 |
-| `current_price` | 当前最低价，Cron 回写；**新建时初始化成 `base_price`，所以永远不是 null** |
-| `last_checked_at` | **只由 Cron 抓到价时写**。刻意不复用 `updated_at` |
-| `last_notified_at` | 发信成功才写；`expired` 靠它区分「已提醒 / 已过期」 |
-| `status` | `active` / `paused` / `expired`，**三态，没有第四态** |
+| 列                       | 说明                                                                      |
+| ------------------------ | ------------------------------------------------------------------------- |
+| `origin` / `destination` | 不用 `from`/`to`——`from` 是 SQL 保留字                                    |
+| `base_price`             | 订阅那一刻的价格                                                          |
+| `current_price`          | 当前最低价，Cron 回写；**新建时初始化成 `base_price`，所以永远不是 null** |
+| `last_checked_at`        | **只由 Cron 抓到价时写**。刻意不复用 `updated_at`                         |
+| `last_notified_at`       | 发信成功才写；`expired` 靠它区分「已提醒 / 已过期」                       |
+| `status`                 | `active` / `paused` / `expired`，**三态，没有第四态**                     |
 
 **`notify_log` 的两个关键设计**
 
@@ -1139,14 +1369,14 @@ Element Plus 全量引入（没做按需，代价是包体，收益是零配置�
 
 ### 6.3 索引与约束为什么这么建
 
-| 对象 | 定义 | 为什么 |
-|---|---|---|
-| `subscriptions_dedupe_key` | 唯一 `(owner_id, origin, destination, depart_date, email)` | 去重放在数据库，并发提交也不会插重。撞上 → 409/4090 |
-| `subscriptions_owner_created_idx` | `(owner_id, created_at desc)` | 列表查询正好覆盖 |
-| `subscriptions_active_idx` | `(status, depart_date) where status='active'` | **部分索引**：过期的行自动退出索引，Cron 扫描成本只跟「还在盯的订阅数」有关 |
-| `notify_log_owner_time_idx` | `(owner_id, notified_at desc)` | 通知记录倒序 |
-| `query_log_owner_time_idx` | `(owner_id, queried_at desc)` | 「本月查了几次」正好覆盖 |
-| `cron_log_ran_at_idx` | `(ran_at desc)` | 排查时永远看最近几条 |
+| 对象                              | 定义                                                       | 为什么                                                                      |
+| --------------------------------- | ---------------------------------------------------------- | --------------------------------------------------------------------------- |
+| `subscriptions_dedupe_key`        | 唯一 `(owner_id, origin, destination, depart_date, email)` | 去重放在数据库，并发提交也不会插重。撞上 → 409/4090                         |
+| `subscriptions_owner_created_idx` | `(owner_id, created_at desc)`                              | 列表查询正好覆盖                                                            |
+| `subscriptions_active_idx`        | `(status, depart_date) where status='active'`              | **部分索引**：过期的行自动退出索引，Cron 扫描成本只跟「还在盯的订阅数」有关 |
+| `notify_log_owner_time_idx`       | `(owner_id, notified_at desc)`                             | 通知记录倒序                                                                |
+| `query_log_owner_time_idx`        | `(owner_id, queried_at desc)`                              | 「本月查了几次」正好覆盖                                                    |
+| `cron_log_ran_at_idx`             | `(ran_at desc)`                                            | 排查时永远看最近几条                                                        |
 
 ⚠️ **`subscriptions_dedupe_key` 必须带 `where status in ('active','paused')`**（库里已是部分索引）：
 唯一索引是五个业务键、与 id 无关。不带条件的话，同航线同日重订会 409、新 uuid 插不进去。
@@ -1191,15 +1421,16 @@ Element Plus 全量引入（没做按需，代价是包体，收益是零配置�
 **修法**：不赌平台内部行为，改成**不依赖动态路由**——
 单条操作搬进已验证可用的 `api/subscriptions/index.js`，用 query 传 id：
 
-| 原 | 现 |
-|---|---|
+| 原                              | 现                                    |
+| ------------------------------- | ------------------------------------- |
 | `DELETE /api/subscriptions/:id` | `DELETE /api/subscriptions?id=<uuid>` |
-| `PATCH /api/subscriptions/:id` | `PATCH /api/subscriptions?id=<uuid>` |
+| `PATCH /api/subscriptions/:id`  | `PATCH /api/subscriptions?id=<uuid>`  |
 
 逻辑原样搬进 `api/_subscriptionOps.js`（`UUID_RE` / `PATCHABLE` / 两个函数），删掉 `[id].js`，
 **让本地与线上行为一致**。这也正好符合 Vercel 官方「相关路由放进同一个函数」的建议。
 
 **延伸**：
+
 - 这个 bug 之所以看起来像「后端忘了写 DELETE」，是因为 `/(.*) → /index.html` 会把
   **「函数不存在」伪装成 405/200 而不是 404**。给人看排错信号，别让它撒谎。
 - 本地 dev 运行器**认方括号**（`matchRoute` 里专门处理 `[xxx]`）⇒ **本地能跑不代表线上能跑**。
@@ -1221,11 +1452,11 @@ Vercel 的环境变量只对**新部署**生效，老部署读不到。改完必
 
 **现象（潜伏很久，靠读代码发现）**：
 
-| 位置 | 原写法 | 后果 |
-|---|---|---|
-| `result.js::localNow()` | `getFullYear()/getHours()` | Vercel 跑 UTC：抓取时间少 8 小时；「出发日不早于今天」在北京 0:00~8:00 **放行昨天** |
-| `_queryLog.monthRange()` | 本地 `new Date(y,m,1)` | 月初月末那 8 小时里，「本月查询次数」算成上个月 |
-| `_apify.localToday()` | 本地日期 | 日历窗口起点是昨天，判据样本里混进一个已过去的日子 |
+| 位置                     | 原写法                     | 后果                                                                                |
+| ------------------------ | -------------------------- | ----------------------------------------------------------------------------------- |
+| `result.js::localNow()`  | `getFullYear()/getHours()` | Vercel 跑 UTC：抓取时间少 8 小时；「出发日不早于今天」在北京 0:00~8:00 **放行昨天** |
+| `_queryLog.monthRange()` | 本地 `new Date(y,m,1)`     | 月初月末那 8 小时里，「本月查询次数」算成上个月                                     |
+| `_apify.localToday()`    | 本地日期                   | 日历窗口起点是昨天，判据样本里混进一个已过去的日子                                  |
 
 **根因**：铁律早就写着「全项目只有 `todayShanghai()` 一份」，但有三个文件是先写的、后来没跟着改。
 **规则写了不等于执行了**——这是最典型的一种技术债。
@@ -1356,6 +1587,7 @@ TZ=UTC node --input-type=module -e "import('./api/_queryLog.js')..."
 **修法**：`readNotifyEnabled(ownerId)`，语义严格按设置页那句话定死：**关掉只影响「发不发信」，不影响抓价与回写**。
 
 三个判断要分开：
+
 - 表里没这行 → 从没设置过 → **默认开**（与 `DEFAULTS` 一致）
 - 查询报错 → **当关闭**（宁可这轮不发信，也不发一封用户可能早就关掉的信），原因写进 `muted[].note`
 - 关掉时：**不写 notify_log、不置 expired**，订阅保持 `active` ⇒ 重开后第二天仍命中会正常补发，不会漏
@@ -1375,11 +1607,13 @@ TZ=UTC node --input-type=module -e "import('./api/_queryLog.js')..."
 （**下划线**，我之前记成带空格，是错的）。技术上 20 行就能支持。
 
 **但三处麻烦都不是代码量的问题**：
+
 1. 商务舱日历能否凑够 `MIN_SAMPLE = 14` 天**未实测** ⇒ 可能整页退化成「判断不了」，而这是产品核心
 2. 回放样本只有经济舱 ⇒ 直接传参会**静默返回经济舱样本**，又一个静默错报的口子
 3. 要花钱验（约 $0.018/次），且订阅侧护栏、文档、样本都要一起动
 
 **决定**：砍。5 处改动，全部「宁可报错，也不静默按经济舱算」：
+
 - `discovery.vue`：删选择器 + `CABINS` + `form.cabin` + 传参（人数改成独占一行，否则留半格空）
 - `api/result.js`：`SUPPORTED_CABINS = ['economy']`，非经济舱 **400 明确拒绝**
 - `api/subscriptions/index.js`：POST 同样拒绝
@@ -1428,6 +1662,7 @@ TZ=UTC node --input-type=module -e "import('./api/_queryLog.js')..."
 **现象**：日历日期整体往前串了几格；某些格子显示 `¥0.00k`。
 
 **根因（两个独立问题）**：
+
 1. 前端「先按 1 号星期位补空格，再顺序渲染数组」⇒ 数组必须从 1 号开始。
    而窗口是「今天起 90 天」，用户查本月时窗口起点就在月中，**必然**第一格不是 1 号。
 2. 占位格 `price = null`，直接写 `c.price / 1000` 就得到 0。
@@ -1460,12 +1695,12 @@ TZ=UTC node --input-type=module -e "import('./api/_queryLog.js')..."
 
 **四种完全不同的故障，库里表现完全相同**：
 
-| 真实原因 | 库里表现 | 日志 |
-|---|---|---|
-| 压根没被调度 | 毫无变化 | 无 |
-| 鉴权 / 环境变量 500 | 毫无变化 | 30 分钟后过期 |
-| 抓价抛错（被循环 catch 吞掉） | 毫无变化 | 同上 |
-| 60s 被平台掐断 | 毫无变化 | 连 console.log 都没有 |
+| 真实原因                      | 库里表现 | 日志                  |
+| ----------------------------- | -------- | --------------------- |
+| 压根没被调度                  | 毫无变化 | 无                    |
+| 鉴权 / 环境变量 500           | 毫无变化 | 30 分钟后过期         |
+| 抓价抛错（被循环 catch 吞掉） | 毫无变化 | 同上                  |
+| 60s 被平台掐断                | 毫无变化 | 连 console.log 都没有 |
 
 **排查走错了一轮**：先以为「阈值没命中」，实际是 **`CRON_SECRET` 没配**——
 handler 第一关就 500 返回，连一行库都没写。
@@ -1476,12 +1711,12 @@ handler 第一关就 500 返回，连一行库都没写。
 **修法**：加 `cron_log` 表 + `logRunStart` / `logRunEnd`。留痕位置在**鉴权之后、MAIL 检查之前**
 （缺 `MAIL_*` 也是一种「跑不起来」，同样要留下证据）。
 
-| 库里看到 | 说明 |
-|---|---|
-| 只有 `ran_at`，`finished_at` 空 | 跑起来了，但被 60s 掐断 |
-| 连一行都没有 | 压根没被调度，或写库前就 500 |
-| `ok=false` + `note` | 半路抛错，原因在 note |
-| `ok=true` + `summary.failed` 有内容 | 抓价失败，原因在 summary |
+| 库里看到                            | 说明                         |
+| ----------------------------------- | ---------------------------- |
+| 只有 `ran_at`，`finished_at` 空     | 跑起来了，但被 60s 掐断      |
+| 连一行都没有                        | 压根没被调度，或写库前就 500 |
+| `ok=false` + `note`                 | 半路抛错，原因在 note        |
+| `ok=true` + `summary.failed` 有内容 | 抓价失败，原因在 summary     |
 
 **两个设计决定**：写流水失败**一律吞掉**只 `console.error`（表没建、网络抖动都不能拖垮主流程）；
 **dry 也写流水**（流水不是业务状态）。
@@ -1563,23 +1798,89 @@ npm-cli.js run dev:api            ← 最外层
 
 ---
 
+### I. 流式 · v2
+
+> 🟢 **━━━━━━━ v2 新增 · 从这里开始 ━━━━━━━**
+>
+> 2026-11 流式改造加的内容，读完「到此结束」那条线就回到 v1 原文。
+
+#### I1. 流式改造后「一个字都不来」
+
+**现象**：接口 200、`done` 也拿到了，界面却一个字没打出来；库里 `delta` 条数为 0。
+
+**根因**：`readChatStream` 用 `indexOf('\n\n')` 切事件。SSE 允许 CRLF，
+CRLF 服务端发的是 `\r\n\r\n`，缓冲区里永远找不到裸的 `\n\n` ⇒ 整条流一个块都没解析出来。
+
+**修法**：每块 decode 后 `.replace(/\r/g, '')` 再拼接。JSON 的换行一定是转义的，删裸 CR 不伤内容。
+
+**延伸**：这 bug 可怕在**症状和「模型没回话」完全一样**。所以 `readChatStream` 末尾有一句
+`if (!sawChunk) throw new Error('模型流里没有收到任何数据块')` —— 把「解析失败」和「真没数据」分开。
+
+#### I2. 工具名被拼成两遍，整轮静默失效
+
+**现象**：模型明明说了要查价格，这一轮却莫名其妙结束，最后回答变成「查不到」。
+
+**根因**：`tool_calls.function.name` 在部分厂商的实现里**每块都重发**。
+无脑 `name += delta.name` ⇒ `judge_one_dayjudge_one_day` ⇒ 工具表里查不到。
+
+**修法**：前缀判断（见 4.4 ②）。重发时 `startsWith` 为真，跳过；真分片时补上。
+
+**为什么难查**：它不抛错。工具找不到只表现为「这一轮没结果」，模型会自己编一段话说没查到。
+
+#### I3. 打字机停在半截
+
+**现象**：最后一个字永远不出现，等 `done` 到了才一次性补全。
+
+**根因**：节流写成「距上次不足 50ms 就丢掉这一块」。最后一块恰好落在窗口内，就再没人渲染它。
+
+**修法**：**尾部节流** —— 不足 50ms 时排一个定时器，到点把当时最新的 `raw` 整体解析一次。
+丢的是「这一次立刻刷」，不是「这一块内容」。
+
+#### I4. `done` 覆盖之后又被写回旧原文
+
+**现象**：答案看起来对，但少了最后几个字；刷新页面又是完整的。
+
+**根因**：`reply.blocks = toBlocks(done.answer)` 之后，那个 50ms 的尾部定时器才触发，
+拿闭包里**旧的** `raw` 重新解析了一次，把 blocks 又盖了回去。
+
+**修法**：覆盖之前先 `typing.cancel()`。顺序是硬约束，反了完全静默。
+
+#### I5. 打字过程中露出半截 `**`
+
+**现象**：本该加粗的地方，打字途中先闪出一对星号，字打完又消失。
+
+**根因**：流式把一个粗体标记劈成两半 —— 收尾的两个星号还没到，
+`parseInline` 只看到开头那两个，只能渲染成字面量。
+
+**修法**：`parseInline` 末尾把落单的 `**` 去掉（`text.slice(last).replace(/\*\*/g, '')`）。
+代码块不走这个函数，不受影响。
+
+**延伸**：这是**流式特有**的一类问题 —— 任何「成对标记 + 逐字到达」的组合都有中间态
+（引用块、链接、表格同理）。要么容忍中间态，要么做「标记未完就先不渲染」的处理。
+
+> 🟢 **━━━━━━━ v2 新增 · 到此结束 ━━━━━━━**
+>
+> 下面回到 v1 原文。
+
+---
+
 ## 八、已知缺口与技术债
 
-| 级别 | 事项 | 说明 |
-|---|---|---|
-| **P0** | Cron 端到端未验收 | 只验过 401/405/dry，**从没真发出一封降价邮件**。这是产品承诺的核心 |
-| **P0** | Vercel 待补 `CRON_SECRET` | 缺它 Cron 每一轮都在写库前 500（根因已确认，等配置） |
-| **P1** | 接口无鉴权 | 任何人拿到域名就能调 `/api/result` 烧额度。公开分享前必须做登录（Supabase Auth，不注册新账号） |
-| **P1** | 工具契约没写成 schema | Agent 要直接吃这份（入参 / 返回 / 何时失败），不用改接口 |
-| **P1** | `query_log` 只记「谁在什么时候查了一次」 | 不记工具名 / 参数 / 耗时 / 成败 ⇒ Agent 出了问题无法定位 |
-| **P1** | 每次运行无工具调用上限 | Agent 一次对话 3~5 次付费调用，死循环会直接烧钱 |
-| **P2** | 完整往返未做 | 现在只列去程候选（`type=1` 的 `best_flights`），`departure_token` 那一步没接 |
-| **P2** | 移动端适配 | 查询页有 640px 断点，其他页面没细调 |
-| **P2** | 订阅列表无分页 | 现在内存排序，跨页会乱（第 51 行注释已标注） |
-| **P2** | `price_history` 表 | 攒历史趋势，完全没做 |
-| **P2** | `待办清单.md` 已过期 | 还写着 Cron ❌ / 邮件 ❌ |
-| **P3** | 舱位只做经济舱 | 不是不支持，是「商务舱日历能否凑够 14 天样本」没实测 |
-| **P3** | 2 条测试 `notify_log` 未清 | 页面会看到两条没有对应订阅的孤立记录（是设计不是 bug） |
+| 级别   | 事项                                     | 说明                                                                                           |
+| ------ | ---------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| **P0** | Cron 端到端未验收                        | 只验过 401/405/dry，**从没真发出一封降价邮件**。这是产品承诺的核心                             |
+| **P0** | Vercel 待补 `CRON_SECRET`                | 缺它 Cron 每一轮都在写库前 500（根因已确认，等配置）                                           |
+| **P1** | 接口无鉴权                               | 任何人拿到域名就能调 `/api/result` 烧额度。公开分享前必须做登录（Supabase Auth，不注册新账号） |
+| **P1** | 工具契约没写成 schema                    | Agent 要直接吃这份（入参 / 返回 / 何时失败），不用改接口                                       |
+| **P1** | `query_log` 只记「谁在什么时候查了一次」 | 不记工具名 / 参数 / 耗时 / 成败 ⇒ Agent 出了问题无法定位                                       |
+| **P1** | 每次运行无工具调用上限                   | Agent 一次对话 3~5 次付费调用，死循环会直接烧钱                                                |
+| **P2** | 完整往返未做                             | 现在只列去程候选（`type=1` 的 `best_flights`），`departure_token` 那一步没接                   |
+| **P2** | 移动端适配                               | 查询页有 640px 断点，其他页面没细调                                                            |
+| **P2** | 订阅列表无分页                           | 现在内存排序，跨页会乱（第 51 行注释已标注）                                                   |
+| **P2** | `price_history` 表                       | 攒历史趋势，完全没做                                                                           |
+| **P2** | `待办清单.md` 已过期                     | 还写着 Cron ❌ / 邮件 ❌                                                                       |
+| **P3** | 舱位只做经济舱                           | 不是不支持，是「商务舱日历能否凑够 14 天样本」没实测                                           |
+| **P3** | 2 条测试 `notify_log` 未清               | 页面会看到两条没有对应订阅的孤立记录（是设计不是 bug）                                         |
 
 ---
 
@@ -1614,16 +1915,16 @@ npm run dev:api:live
 
 ### 9.2 环境变量（`.env.local` / Vercel 面板）
 
-| 变量 | 用途 | 缺了会怎样 |
-|---|---|---|
-| `SUPABASE_URL` | 数据库地址 | 500 |
-| `SUPABASE_SECRET_KEY` | 后端专用密钥（绕过 RLS） | 500 |
-| `APIFY_TOKEN` | 价格日历 | 500 + `health` 显示 false |
-| `SERPAPI_KEY` | 航班列表 | 500 |
+| 变量                      | 用途                      | 缺了会怎样                  |
+| ------------------------- | ------------------------- | --------------------------- |
+| `SUPABASE_URL`            | 数据库地址                | 500                         |
+| `SUPABASE_SECRET_KEY`     | 后端专用密钥（绕过 RLS）  | 500                         |
+| `APIFY_TOKEN`             | 价格日历                  | 500 + `health` 显示 false   |
+| `SERPAPI_KEY`             | 航班列表                  | 500                         |
 | `MAIL_USER` / `MAIL_PASS` | QQ 邮箱 + **16 位授权码** | Cron 500（会留 `cron_log`） |
-| `CRON_SECRET` | Cron 鉴权 | Cron **500 拒绝执行** |
-| `SKYSCRAPPER_KEY` | 备用源（未接入主链路） | 无影响 |
-| `SITE_URL` | 邮件里的链接（可选） | 从请求头拼 |
+| `CRON_SECRET`             | Cron 鉴权                 | Cron **500 拒绝执行**       |
+| `SKYSCRAPPER_KEY`         | 备用源（未接入主链路）    | 无影响                      |
+| `SITE_URL`                | 邮件里的链接（可选）      | 从请求头拼                  |
 
 ⚠️ **REPLAY 系列绝不能上线**——`samples/` 被 `.vercelignore` 排除了，开了就每次查询都报「找不到样本」。
 
@@ -1741,86 +2042,159 @@ UI 选项 ≤ 后端实现。为此删掉过舱位选择器、改掉过 4 处「
 还有一个细节：判断「有没有比过价」认专用的 `last_checked_at`，不认 `updated_at`——
 那一列用户改阈值时也会写，拿它当比价时间就是谎报。
 
+> 🟢 **━━━━━━━ v2 新增 · 从这里开始 ━━━━━━━**
+
+**Q13：流式为什么不引第三方库？** 〔v2〕
+
+后端 `openai` SDK 23MB，默认重试/超时和 Vercel 60s 硬顶冲突，出问题还是个黑盒。
+而协议本身只有三件事：`data: ` 前缀、`\n\n` 分隔、`[DONE]` 结束。
+手写一遍 90 行，换来「每个字节为什么这么处理」都能讲（见 4.4）。前端同理，不引 `eventsource-parser`。
+
+**Q14：模型正在吐字，但你不知道它是要调工具还是写答案，怎么办？** 〔v2〕
+
+两种做法：B 先照传（delta 直接发出去，事后发现要工具就发 `retract` 撤回）；
+B' 先攒着（确认是答案再放）。
+
+选 B，依据是实测：连打 10 次，工具轮的 `content` 长度**全是 0** ——
+「先说了几个字再决定调工具」几乎不会发生。B' 的代价是每个字都多等一段确认延迟，
+把流式的意义抵消掉一半。但 `retract` 分支仍然保留：概率是 0 也要留安全阀，
+**换模型 / 改提示词就可能变**。
+
+**Q15：188 字的答案 590 毫秒就吐完了，打字机怎么不显得假？** 〔v2〕
+
+先量再定：188 字 → 127 个 delta → 590ms，约 200 块/秒。
+
+关键决定是**不人为放缓**。放缓（比如每字 30ms）会让动画晚于 `done` 到达，
+于是出现「答案其实已经落库、界面还在慢慢吐」——一种新的不一致，比快更糟。
+现在的做法是按真实速度打，加 50ms 尾部节流，只负责别让主线程一秒跑 200 次解析。
+（「会打满主线程」是推断，没单独实测过；这里选保守。）
+
+> 🟢 **━━━━━━━ v2 新增 · 到此结束 ━━━━━━━**
+
 ---
 
-## 十一、往 Agent 演进
+## 十一、Agent 层为什么加 · v2 重写
 
-### 11.1 现在缺的只有一样：一个会决定调哪个工具的脑子
+> 🟢 **━━━━━━━ v2 新增 · 从这里开始 ━━━━━━━**
+>
+> 整章重写。原来这节叫「往 Agent 演进」，是 10 月底的**计划书**；现在 Agent 已经做完，
+> 改成复盘：当时怎么论证该不该加、为什么这么放、实际做成了什么样、哪里改了主意。
 
-这个项目已经建好了 Agent **最难的那一半——工具层**：
+### 11.0 先回答一个问题：到底该不该加
 
-| 大多数人做 Agent demo | 这个项目已有 |
-|---|---|
-| 接一个搜索 API，让 LLM 读一堆网页 | `getPriceCalendar` 返回**结构化每日价格** |
-| 数字靠 LLM 总结，问一句就编 | `_judge` 产出 P25/P75/百分位，**可复现、有出处** |
-| 只能读，不能写 | `POST/PATCH/DELETE /api/subscriptions` 都是现成的写工具 |
-| 没有状态，聊完就忘 | 订阅落库 + `notify_log` 流水 |
+这个项目的产品闭环（查价 → 判据 → 订阅 → 邮件）**不用 LLM 也是完整的**。
+所以加 Agent 之前先把形态定死：
 
-已经具备的五个工具：**查日历 / 查航班 / 算判据 / 建订阅 / 改订阅**。
+> **不是把产品改造成 agent，而是在已验证的产品上「加一层」。**
+> 表单 / 结果页 / 订阅 / 设置**一行不改、继续可用**；agent 是补充入口，不是替代品。
 
-### 11.2 正确的转法是「分层」，不是「全转」
+然后是一张准入表，四问全过才做：
+
+| #   | 问                                                    | 不过怎么办                            |
+| --- | ----------------------------------------------------- | ------------------------------------- |
+| 1   | 这个输入，**表单能不能接住**？                        | 接得住 ⇒ 不加。表单更稳、更快、更便宜 |
+| 2   | 结论**能不能指到具体证据**（工具返回值 / 数据库行）？ | 指不到 ⇒ 它是文案生成器，不是 agent   |
+| 3   | 做错时**后果是否可承受**（只读 / 可撤销 / 有对照）？  | 不可承受 ⇒ 不给它这个权限             |
+| 4   | 能不能讲清**「为什么必须是 agent」**？                | 讲不清 ⇒ 只是多一次模型调用           |
+
+标准还改过一次：最早是「删掉 agent 产品会受损才算合格」，太苛刻——会把值得做但非必需的一起砍掉。
+放宽成「加进来让产品更好、更灵活，且能学到东西」，但**「更好」必须落到第 1~3 问的具体答案上**，
+不能停在形容词。
+
+### 11.1 它扮演什么角色：只补表单接不住的那一类输入
+
+过筛结果本身就是答案：
+
+| 候选                                     | 判定                                                     |
+| ---------------------------------------- | -------------------------------------------------------- |
+| 模糊意图入口（「下个月去南京哪天便宜」） | ✅ 过第 1 问：表单要求用户**先做他还没做的决定**         |
+| 解释层（追问「为什么说正常」）           | ✅ 过第 1、2 问：此刻是**静态文案**，问不出任何东西      |
+| 自然语言订阅（「盯这条」）               | ✅ 但**只做入口**：产出预填表单，写仍由前端发 POST       |
+| agent 直接写库（自己 POST / PATCH）      | ❌ 卡第 3 问：写错不可撤销、无审计                       |
+| 让 agent 自己算分位 / 判档               | ❌ 卡第 2 问：不可复现，会毁掉唯一被真实数据验证过的计算 |
+| 把表单整体换成对话                       | ❌ 卡第 1 问                                             |
+
+由此定下两条红线（当时强调「写进代码，不靠自觉」）：
+
+1. **LLM 只决定「查什么」，代码决定「算出什么」。** P25/P75、严格小于计数、`MIN_SAMPLE=14`
+   一个字都不许交给模型 —— 它是这个项目里唯一被真实数据验证过的计算。
+2. **第一版无写权限。** 产物是「预填好的表单」，不是库里的行。
+   最坏后果只能是烧额度，不能是改坏数据。
+
+### 11.2 放在哪：逻辑上分三层，物理上并排
 
 ```
 用户：「我下个月想去北京，什么时候买最便宜？」
    ↓
-【Agent 层 · LLM】      ← 要学的东西全在这
-   理解意图 → 决定查什么 → 填参数 → 调工具 → 看结果 → 不够就再查一轮 → 组织成人话
-   ↓ 调用
-【工具层 · 已建好】      ← 一行不用改
-   getPriceCalendar / searchFlights / judgePrice / createSubscription
+【编排层 · LLM】        api/agent.js → _agentRun.js
+   理解意图 → 决定查什么 → 填参数 → 调工具 → 看结果 → 不够再查一轮 → 组织成人话
    ↓
-【事实层 · 确定性代码】  ← 必须留在代码里
+【工具层 · 确定性】      api/_agentTools.js（6 个原子工具）
+   只执行、不判断；每个工具自己校参，不信模型给的参数
+   ↓
+【事实层 · 判据】        api/_judge.js / _compose.js
    P25/P75、百分位、当前价 —— 数字不由 LLM 产生
 ```
 
-**关键判断：LLM 放在「编排层」，不放在「判断层」。**
+**关键判断：LLM 放在编排层，不放在判断层。**
 
-### 11.3 一个必须先定下的契约问题
+物理位置也刻意「不高人一等」：`api/agent.js` 和别的 serverless 函数平级，
+不新建服务、不加一层代理；前端是独立 tab（`views/powerTabs/ask.vue`），不侵入查询页。
 
-**现有接口是「页面视角的聚合」，Agent 要的是「原子工具」。**
+### 11.3 一个必须先定的契约：页面要聚合，Agent 要原子
 
-`/api/result` 一次返回日历 + 判据 + 航班 + 建议阈值 + 提示语——这是为结果页一次性渲染拼好的。但：
+`/api/result` 一次返回日历 + 判据 + 航班 + 建议阈值 + 提示语 —— 这是为结果页一次性渲染拼好的。但：
 
-- 它**慢**（Apify 20~60 秒），放进 Agent 循环里，模型等一轮就快 60 秒，对话体验会崩
-- 它**粒度太粗**，模型问「11 月哪天最便宜」时并不需要航班列表，但一次调用会把两路都打出去（多花钱）
+- 它**慢**（Apify 20~60 秒），塞进 Agent 循环，模型等一轮就快 60 秒，对话体验会崩
+- 它**粒度太粗**，模型问「11 月哪天最便宜」并不需要航班列表，一次调用却把两路都打出去（多花钱）
 
 ⇒ 正确做法：**页面继续用聚合接口，Agent 用拆出来的原子工具**，
-内部复用同一批 `_apify` / `_judge` / `_serp`，口径一份不变。这件事只需**定契约**，不用改现有接口。
+内部复用同一批 `_apify` / `_judge` / `_serp`，口径一份不变。这件事只需要**定契约**，现有接口一行不改。
 
-### 11.4 两阶段
+### 11.4 计划 vs 实际：有一处改了主意
 
-**阶段一：自然语言 → 结构化参数**
-在查询页加输入框，后端加 `/api/agent/intent`：一次 LLM 调用输出
-`{from, to, dateRange, budget, flexibility}`，然后：
-① **用和表单完全同一套校验**（重点：不能信 LLM 给的参数）
-② 校验不过 → 回问用户
-③ 通过 → 自动填表 → 走已有的 `/api/result`
-这一段做完页面就「像 Agent」了，**判据代码一行不用改**。
+原计划是「两阶段」：先做 `/api/agent/intent`，一次 LLM 调用只输出
+`{from, to, dateRange, budget, flexibility}`，校验后自动填表走 `/api/result`；第二阶段再做 tool calling 循环。
 
-**阶段二：真·工具编排**
-tool calling 循环：模型决定调什么 → 我们执行 → 结果回给模型 → 下一轮 → 最终回答。
+实际**直接做了第二阶段**，intent 接口没做。理由：
 
-能讲的硬货：
+- tool calling 循环里模型本来就要自己填参数。再单独做一次「自然语言 → 参数」，
+  等于同一件事做两遍，而且**多一次 LLM 调用**（延迟和成本都翻倍）。
+- 阶段一要解决的「不能信 LLM 给的参数」，在工具层已经有落点：每个工具自己校参，
+  非法参数不回给模型去猜，直接 `ok:false` 并把原因给它看。
 
-| 工程点 | 为什么是加分项 |
-|---|---|
-| 循环上限 + 时间预算 | 不做就会死循环烧钱，是 Agent 项目通病 |
-| 工具参数校验不信模型 | 直接对应「数据准确性」这个初衷 |
-| 写操作二次确认 | 模型要建订阅，必须回显参数让用户点确认 |
-| 工具失败怎么恢复 | 日历超时 → 换窗口重试 or 如实告诉用户 |
-| **每一步落日志** | `query_log` 扩列就是 Agent 的可观测性 |
+原计划里真正保留下来的那条是：**每一处都得能指着产品说出理由**，不能停在「我想练」。
 
-最后那条很多 demo 完全没有：模型第几轮调了什么工具、参数是什么、返回什么。
-面试官问「你怎么 debug 一个乱来的 Agent」，有答案和没答案差别很大。
+最后做出来的东西：
 
-### 11.5 建议顺序
+| 模块                                                             | 状态 |
+| ---------------------------------------------------------------- | ---- |
+| 6 个原子工具 + tool calling 循环                                 | ✅   |
+| 每一步落库（`agent_run` / `agent_step`）                         | ✅   |
+| 多轮会话（懒创建、历史窗口 2 轮、只取 `status='ok'` 且非空）     | ✅   |
+| SSE 阶段流 + 答案逐字（`meta`/`stage`/`delta`/`retract`/`done`） | ✅   |
+| 价格卡片（需要 `agent_artifact` 表）                             | ❌   |
 
-1. **Cron 端到端验一次真发信** —— 地基，不验它谈什么都虚
-2. 工具契约写成 schema + `query_log` 扩列 —— 半天，纯文档 + 一条 SQL
-3. 成本闸门（每次运行最多 N 次工具调用）
-4. 阶段一（自然语言 → 参数）
-5. 阶段二（tool calling 循环）
-6. 登录鉴权（公开链接前）
+工具清单（`_agentTools.js`，6 个）：
+`search_price_calendar` / `find_cheapest_days` / `judge_one_day` /
+`search_flights` / `compare_two_dates` / `create_subscription_draft`。
+
+最后一个只产出**草稿**，不写库 —— 这是 11.1 那条「第一版无写权限」红线的落地。
+
+### 11.5 还欠着的
+
+| 事项     | 为什么卡住                                                                               |
+| -------- | ---------------------------------------------------------------------------------------- |
+| 价格卡片 | `agent_step.result` 被 `summarize` 截到 1500 字，日历存不下 ⇒ 得先有 `agent_artifact` 表 |
+| 写权限   | 红线未动：等有鉴权和审计再说                                                             |
+| 断线续传 | 现在只靠 `meta` 保住会话 id，断了得重问，没有续传                                        |
+| 可解释性 | 答案里的价格点不开，落不到对应的 `agent_step`                                            |
+| 超时分级 | 首块 / 单次现在是全局常数，可以按工具类型给不同预算                                      |
+| 鉴权     | 线上接口没有鉴权，任何人都能调、直接烧额度（只有 `AGENT_DISABLED` 刹车）                 |
+
+> 🟢 **━━━━━━━ v2 新增 · 到此结束 ━━━━━━━**
+>
+> 下面回到 v1 原文（代码阅读路线）。
 
 ---
 
